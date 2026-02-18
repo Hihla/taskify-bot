@@ -41,34 +41,43 @@ async def start_insta_task(user_id: str):
         page = await context.new_page()
 
         try:
-            # 1. تسجيل الدخول التلقائي
+            # 1. تسجيل الدخول
             await page.goto(LOGIN_URL)
             await page.fill('input[name="username"]', WEB_USER)
             await page.fill('input[name="password"]', WEB_PASS)
             await page.click('button[type="submit"]')
             await page.wait_for_load_state("networkidle")
 
-            # 2. بدء المهمة (البحث عن زر البدء)
-            # ملاحظة: سنحاول الضغط على أول مهمة انستغرام متاحة
-            await page.click('button:has-text("Start"), .start-btn') 
-            await asyncio.sleep(5) # انتظار ظهور البيانات
+            # 2. الذهاب لصفحة المهام والضغط على ابدأ
+            # سنقوم بالانتظار حتى يظهر أي زر يحتوي كلمة Start
+            await page.wait_for_selector('button:has-text("Start")', timeout=15000)
+            await page.click('button:has-text("Start")') 
 
-            # 3. صيد البيانات (Deep Extraction من كودك القديم)
-            fields = await page.locator('input[readonly]').all()
-            if len(fields) >= 2:
-                acc_user = await fields[0].input_value()
-                acc_pass = await fields[1].input_value()
-                acc_email = await fields[3].input_value() if len(fields) > 3 else "N/A"
+            # 3. الانتظار حتى تظهر حقول البيانات (حجر الزاوية)
+            # سننتظر ظهور حقل واحد على الأقل يحتوي على قيمة
+            await asyncio.sleep(7) # وقت أمان إضافي لتحميل البيانات داخل الحقول
+
+            # 4. سحب جميع القيم من أي input موجود في الصفحة (الطريقة المضمونة)
+            raw_values = await page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('input'))
+                            .map(el => el.value)
+                            .filter(v => v && v.length > 2);
+            }""")
+
+            if len(raw_values) >= 2:
+                # ترتيب الموقع غالباً: 0=User, 1=Pass, 2=Name, 3=Email
+                # سنقوم بتعبئة البيانات بناءً على المتاح
+                res = {
+                    "status": "READY",
+                    "user": raw_values[0] if len(raw_values) > 0 else "غير متوفر",
+                    "pass": raw_values[1] if len(raw_values) > 1 else "غير متوفر",
+                    "name": raw_values[2] if len(raw_values) > 2 else "غير متوفر",
+                    "email": raw_values[3] if len(raw_values) > 3 else "غير متوفر"
+                }
+                await browser.close()
+                return res
             else:
-                raise Exception("لم يتم العثور على حقول البيانات")
-
-            await browser.close()
-            return {
-                "status": "READY",
-                "user": acc_user.strip(),
-                "pass": acc_pass.strip(),
-                "email": acc_email.strip()
-            }
+                raise Exception("البيانات لم تظهر في الحقول بعد")
 
         except Exception as e:
             await browser.close()
@@ -123,3 +132,4 @@ async def submit_2fa(data: dict):
         except:
             await browser.close()
             return {"status": "ERROR"}
+
