@@ -46,42 +46,51 @@ async def start_insta_task(user_id: str):
             await page.fill('input[name="username"]', WEB_USER)
             await page.fill('input[name="password"]', WEB_PASS)
             await page.click('button[type="submit"]')
-            await page.wait_for_load_state("networkidle")
+            
+            # 2. البحث عن زر البدء والضغط عليه
+            # سننتظر حتى يظهر أي عنصر قابل للنقر يحتوي على كلمة Start
+            start_selector = 'button:has-text("Start"), a:has-text("Start"), .btn-primary'
+            await page.wait_for_selector(start_selector, timeout=20000)
+            await page.click(start_selector)
 
-            # 2. الذهاب لصفحة المهام والضغط على ابدأ
-            # سنقوم بالانتظار حتى يظهر أي زر يحتوي كلمة Start
-            await page.wait_for_selector('button:has-text("Start")', timeout=15000)
-            await page.click('button:has-text("Start")') 
+            # 3. الانتظار الحرج (هنا السحر)
+            # سننتظر حتى يظهر رمز "@" في الصفحة (دليل على ظهور الإيميل)
+            await page.wait_for_function('() => document.body.innerText.includes("@")', timeout=30000)
+            await asyncio.sleep(2) # وقت إضافي للاستقرار
 
-            # 3. الانتظار حتى تظهر حقول البيانات (حجر الزاوية)
-            # سننتظر ظهور حقل واحد على الأقل يحتوي على قيمة
-            await asyncio.sleep(7) # وقت أمان إضافي لتحميل البيانات داخل الحقول
+            # 4. استخراج كافة النصوص من الصفحة وتحويلها لمصفوفة
+            all_text = await page.evaluate("() => document.body.innerText")
+            lines = [l.strip() for l in all_text.split('\n') if len(l.strip()) > 1]
+            
+            # 5. تحليل الأسطر لجلب البيانات (من كودك القديم المضمون)
+            # سنبحث عن الإيميل أولاً لأنه العلامة المميزة
+            acc_email = next((s for s in lines if "@" in s), "غير متوفر")
+            
+            # غالباً البيانات تكون مرتبة خلف بعضها في هذه المواقع
+            # سنحاول جلب القيم التي تلي كلمات مفتاحية معينة
+            res = {
+                "status": "READY",
+                "user": "غير متوفر",
+                "pass": "غير متوفر",
+                "name": "غير متوفر",
+                "email": acc_email
+            }
 
-            # 4. سحب جميع القيم من أي input موجود في الصفحة (الطريقة المضمونة)
-            raw_values = await page.evaluate("""() => {
-                return Array.from(document.querySelectorAll('input'))
-                            .map(el => el.value)
-                            .filter(v => v && v.length > 2);
-            }""")
+            # محاولة ذكية: جلب أول 4 نصوص طويلة تظهر بعد الضغط على Start
+            # عادة تكون: يوزر، باس، اسم، إيميل
+            clean_lines = [l for l in lines if len(l) > 4 and "Start" not in l and "Logout" not in l]
+            
+            if len(clean_lines) >= 3:
+                res["user"] = clean_lines[0]
+                res["pass"] = clean_lines[1]
+                res["name"] = clean_lines[2]
 
-            if len(raw_values) >= 2:
-                # ترتيب الموقع غالباً: 0=User, 1=Pass, 2=Name, 3=Email
-                # سنقوم بتعبئة البيانات بناءً على المتاح
-                res = {
-                    "status": "READY",
-                    "user": raw_values[0] if len(raw_values) > 0 else "غير متوفر",
-                    "pass": raw_values[1] if len(raw_values) > 1 else "غير متوفر",
-                    "name": raw_values[2] if len(raw_values) > 2 else "غير متوفر",
-                    "email": raw_values[3] if len(raw_values) > 3 else "غير متوفر"
-                }
-                await browser.close()
-                return res
-            else:
-                raise Exception("البيانات لم تظهر في الحقول بعد")
+            await browser.close()
+            return res
 
         except Exception as e:
             await browser.close()
-            return {"status": "ERROR", "message": str(e)}
+            return {"status": "ERROR", "message": f"فشل الاستخراج: {str(e)}"}
 
 @app.get("/api/get-otp")
 async def get_otp(user_id: str):
@@ -132,4 +141,5 @@ async def submit_2fa(data: dict):
         except:
             await browser.close()
             return {"status": "ERROR"}
+
 
