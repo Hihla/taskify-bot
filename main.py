@@ -7,7 +7,7 @@ from playwright.async_api import async_playwright
 
 app = FastAPI()
 
-# حل مشكلة الـ CORS
+# حل مشكلة CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,69 +16,110 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# دالة التأكد من وجود المتصفح (مهمة جداً لـ Render)
-def install_playwright_browsers():
-    try:
-        print("Checking Playwright browsers...")
-        subprocess.run(["playwright", "install", "chromium"], check=True)
-        print("Chromium installed successfully!")
-    except Exception as e:
-        print(f"Error installing browsers: {e}")
+# بيانات تسجيل الدخول للموقع (من كودك القديم)
+LOGIN_URL = "https://webearn.top/login"
+WEB_USER = "ddraw"
+WEB_PASS = "m570991m"
 
-# استدعاء التثبيت عند بدء التشغيل
-install_playwright_browsers()
+def ensure_browsers():
+    try:
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        print(f"Browser install log: {e}")
+
+ensure_browsers()
 
 @app.get("/")
-async def health_check():
-    return {"status": "Server is running!", "info": "Ready for tasks"}
+async def health():
+    return {"status": "Server is Live", "target": "WebEarn Automated"}
 
 @app.get("/api/start-insta-task")
 async def start_insta_task(user_id: str):
-    if not user_id:
-        raise HTTPException(status_code=400, detail="Missing user_id")
-
     async with async_playwright() as p:
-        try:
-            # تشغيل المتصفح بأخف إعدادات
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--single-process",
-                    "--disable-gpu"
-                ]
-            )
-            
-            context = await browser.new_context()
-            page = await context.new_page()
-            
-            # منع تحميل الصور لتسريع العملية
-            await page.route("**/*.{png,jpg,jpeg,svg,woff,ttf}", lambda route: route.abort())
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = await browser.new_context()
+        page = await context.new_page()
 
-            # مثال: التوجه لموقع الاختبار أو موقعك
-            # await page.goto("https://example.com") 
-            
-            # بيانات وهمية للتجربة الآن
-            result = {
-                "status": "READY",
-                "user": f"insta_user_{user_id[:4]}",
-                "pass": "Pass@778899",
-                "msg": "تم إنشاء الحساب بنجاح"
-            }
+        try:
+            # 1. تسجيل الدخول التلقائي
+            await page.goto(LOGIN_URL)
+            await page.fill('input[name="username"]', WEB_USER)
+            await page.fill('input[name="password"]', WEB_PASS)
+            await page.click('button[type="submit"]')
+            await page.wait_for_load_state("networkidle")
+
+            # 2. بدء المهمة (البحث عن زر البدء)
+            # ملاحظة: سنحاول الضغط على أول مهمة انستغرام متاحة
+            await page.click('button:has-text("Start"), .start-btn') 
+            await asyncio.sleep(5) # انتظار ظهور البيانات
+
+            # 3. صيد البيانات (Deep Extraction من كودك القديم)
+            fields = await page.locator('input[readonly]').all()
+            if len(fields) >= 2:
+                acc_user = await fields[0].input_value()
+                acc_pass = await fields[1].input_value()
+                acc_email = await fields[3].input_value() if len(fields) > 3 else "N/A"
+            else:
+                raise Exception("لم يتم العثور على حقول البيانات")
 
             await browser.close()
-            return result
+            return {
+                "status": "READY",
+                "user": acc_user.strip(),
+                "pass": acc_pass.strip(),
+                "email": acc_email.strip()
+            }
 
         except Exception as e:
-            # في حال حدث خطأ، نغلق المتصفح ونرسل الخطأ
-            print(f"Task Error: {e}")
+            await browser.close()
             return {"status": "ERROR", "message": str(e)}
 
 @app.get("/api/get-otp")
 async def get_otp(user_id: str):
-    return {"code": "885522"}
+    # مرحلة الضغط على "Search Email for Code"
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = await browser.new_page()
+        try:
+            # تسجيل دخول سريع (يفضل لاحقاً استخدام Cookies)
+            await page.goto(LOGIN_URL)
+            await page.fill('input[name="username"]', WEB_USER)
+            await page.fill('input[name="password"]', WEB_PASS)
+            await page.click('button[type="submit"]')
+            
+            # الضغط على زر جلب الكود
+            await page.click('button:has-text("Search Email for Code")')
+            
+            # الانتظار حتى يظهر الكود باللون الأخضر (timeout 2 min)
+            await page.wait_for_selector('.text-success', timeout=120000)
+            code = (await page.locator('.text-success').inner_text()).strip()
+            
+            await browser.close()
+            return {"code": code}
+        except Exception as e:
+            await browser.close()
+            return {"code": "لم يصل بعد", "error": str(e)}
 
 @app.post("/api/submit-2fa")
 async def submit_2fa(data: dict):
-    return {"status": "SUCCESS"}
+    # مرحلة الـ Submit Report النهائية
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = await browser.new_page()
+        try:
+            await page.goto(LOGIN_URL)
+            await page.fill('input[name="username"]', WEB_USER)
+            await page.fill('input[name="password"]', WEB_PASS)
+            await page.click('button[type="submit"]')
+            
+            # وضع السيكريت كود (إذا كان الموقع يطلبه في هذه المرحلة)
+            # await page.fill('#secret-input', data.get("secret_code"))
+            
+            # الضغط على زر إرسال التقرير
+            await page.click('button:has-text("Submit Report")')
+            
+            await browser.close()
+            return {"status": "SUCCESS"}
+        except:
+            await browser.close()
+            return {"status": "ERROR"}
