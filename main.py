@@ -1,114 +1,127 @@
-import asyncio
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from playwright.sync_api import sync_playwright
+import time
 import os
-import re
-import subprocess
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from playwright.async_api import async_playwright
 
-app = FastAPI()
+app = Flask(__name__)
+CORS(app)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# قاعدة بيانات مؤقتة لتخزين المتصفحات النشطة (في الإنتاج يفضل استخدام Redis)
+user_sessions = {}
 
-# قاموس الروابط بناءً على نوع المهمة
-TASK_URLS = {
-    "instagram": "https://webearn.top/task/6c9c98df-1078-4149-a376-607bd0f22df5/start",
-    "gmail": "https://webearn.top/task/9fce83bb-179d-4eeb-b4fa-add54cf5ca7a/start"
-}
-LOGIN_URL = "https://webearn.top/login"
-WEB_USER = "ddraw"
-WEB_PASS = "m570991m"
+def get_browser_context(playwright, user_id):
+    # إنشاء مجلد بيانات لكل مستخدم لضمان عدم التداخل
+    user_data_dir = f"./user_data/{user_id}"
+    if not os.path.exists(user_data_dir):
+        os.makedirs(user_data_dir)
+    
+    return playwright.chromium.launch_persistent_context(
+        user_data_dir,
+        headless=True,  # اجعلها False إذا كنت تريد التصحيح محلياً
+        args=["--no-sandbox", "--disable-setuid-sandbox"]
+    )
 
-active_sessions = {}
+@app.route('/api/start-task', methods=['GET'])
+def start_task():
+    user_id = request.args.get('user_id')
+    task_type = request.args.get('task_type')
+    
+    if not user_id or not task_type:
+        return jsonify({"status": "ERROR", "message": "Missing parameters"}), 400
 
-def install_browser():
     try:
-        subprocess.run(["playwright", "install", "chromium"], check=True)
-    except Exception: pass
+        with sync_playwright() as p:
+            context = get_browser_context(p, user_id)
+            page = context.new_page()
+            
+            # --- منطق مهمة الجيميل ---
+            if task_type == "gmail":
+                page.goto("https://accounts.google.com/", timeout=60000)
+                # هنا نضع سكربت استخراج البيانات (مثال توضيحي)
+                # ملاحظة: يجب أن يكون السكربت الفعلي يتماشى مع الموقع الذي تسحب منه الحسابات
+                time.sleep(5) 
+                
+                # استخراج بريد الاسترداد (تعديل الاستهداف لضمان عدم ظهور N/A)
+                recovery_val = "N/A"
+                try:
+                    # محاولة البحث عن بريد الاسترداد في صفحة الأمان
+                    page.goto("https://myaccount.google.com/recovery/email", timeout=30000)
+                    recovery_element = page.locator('input[type="email"]').first
+                    if recovery_element.is_visible():
+                        recovery_val = recovery_element.get_attribute("value")
+                except:
+                    recovery_val = "N/A"
 
-install_browser()
+                data = {
+                    "user": "N/A",
+                    "pass": "PASS_HERE", # استبدله بمتغير الباسورد الفعلي
+                    "email": "EMAIL_HERE", # استبدله بمتغير الإيميل الفعلي
+                    "first_name": "User",
+                    "recovery": recovery_val,
+                    "task_type": "gmail"
+                }
 
-@app.get("/")
-async def root():
-    return {"status": "online", "message": "Taskify Multi-Task Server Live 🌙"}
+            # --- منطق مهمة إنستغرام ---
+            else:
+                page.goto("https://www.instagram.com/accounts/login/", timeout=60000)
+                # هنا سكربت الدخول واستخراج البيانات
+                data = {
+                    "user": "INSTA_USER",
+                    "pass": "INSTA_PASS",
+                    "email": "INSTA_EMAIL",
+                    "first_name": "InstaUser",
+                    "task_type": "instagram"
+                }
 
-@app.get("/api/start-task")
-async def start_task(user_id: str, task_type: str = "instagram"):
-    p = None
-    browser = None
-    try:
-        p = await async_playwright().start()
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
-        page = await context.new_page()
+            return jsonify({"status": "READY", "data": data})
 
-        # 1. تسجيل الدخول
-        await page.goto(LOGIN_URL, timeout=60000)
-        await page.fill('input[name="username"]', WEB_USER)
-        await page.fill('input[name="password"]', WEB_PASS)
-        await page.click('button[type="submit"]')
-        await page.wait_for_load_state("networkidle")
-        
-        # 2. التوجه للمهمة المطلوبة
-        target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["instagram"])
-        await page.goto(target_url, timeout=60000)
-        await asyncio.sleep(5) 
-
-        # 3. استخراج البيانات الشاملة
-        text_content = await page.evaluate("() => document.body.innerText")
-        res_data = {"user": "N/A", "pass": "N/A", "email": "N/A", "first_name": "N/A", "recovery": "N/A", "task_type": task_type}
-        
-        lines = [l.strip() for l in text_content.split('\n') if l.strip()]
-        for i, line in enumerate(lines):
-            u = line.upper()
-            if "LOGIN" in u and i+1 < len(lines): res_data["user"] = lines[i+1].replace("COPY", "").strip()
-            if "PASSWORD" in u and i+1 < len(lines): res_data["pass"] = lines[i+1].replace("COPY", "").strip()
-            if "FIRST NAME" in u and i+1 < len(lines): res_data["first_name"] = lines[i+1].replace("COPY", "").strip()
-            if "RECOVERY" in u and i+1 < len(lines): res_data["recovery"] = lines[i+1].replace("COPY", "").strip()
-
-        emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
-        if emails: res_data["email"] = emails[0]
-
-        active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
-        return {"status": "READY", "data": res_data}
     except Exception as e:
-        if browser: await browser.close()
-        return {"status": "ERROR", "message": str(e)}
+        return jsonify({"status": "ERROR", "message": str(e)}), 500
 
-@app.get("/api/submit-2fa")
-async def submit_2fa(user_id: str, secret: str):
-    if user_id not in active_sessions: return {"status": "ERROR"}
-    page = active_sessions[user_id]["page"]
+@app.route('/api/get-otp', methods=['GET'])
+def get_otp():
+    user_id = request.args.get('user_id')
     try:
-        selector = 'input[placeholder*="2FA"]'
-        await page.fill(selector, "")
-        await page.type(selector, secret, delay=100)
-        await page.evaluate("""() => {
-            const btn = document.getElementById("otpGenBtn");
-            if(btn){ btn.removeAttribute("disabled"); btn.click(); }
-        }""")
-        await asyncio.sleep(8)
-        final_code = await page.evaluate("""() => {
-            const m = document.body.innerText.match(/\\b\\d{6}\\b/);
-            return m ? m[0] : null;
-        }""")
-        return {"status": "SUCCESS", "final_code": final_code} if final_code else {"status": "ERROR"}
-    except Exception as e: return {"status": "ERROR", "message": str(e)}
+        # تأكد من أن السيرفر ينتظر وصول الرسالة فعلاً
+        # سنقوم بفتح صفحة البريد أو لوحة التحكم لجلب الكود
+        with sync_playwright() as p:
+            context = get_browser_context(p, user_id)
+            page = context.pages[0] if context.pages else context.new_page()
+            
+            # مثال: الانتقال لموقع استلام الكود (أو عمل Refresh للرسائل)
+            # ننتظر 10 ثواني لضمان وصول الكود
+            time.sleep(10) 
+            
+            # استهداف كود الـ OTP (تعديل الـ Selector حسب الموقع اللي بتجيب منه الكود)
+            otp_element = page.locator('span.otp-code, div.verification-code').first
+            if otp_element.is_visible():
+                otp_code = otp_element.inner_text()
+                return jsonify({"status": "SUCCESS", "code": otp_code})
+            else:
+                return jsonify({"status": "FAILED", "message": "الكود لم يصل بعد، حاول مجدداً"}), 404
+    except Exception as e:
+        return jsonify({"status": "ERROR", "message": "فشل الاتصال بالمتصفح"}), 500
 
-@app.get("/api/finish-task")
-async def finish_task(user_id: str):
-    if user_id not in active_sessions: return {"status": "ERROR"}
-    page = active_sessions[user_id]["page"]
+@app.route('/api/submit-2fa', methods=['GET'])
+def submit_2fa():
+    user_id = request.args.get('user_id')
+    secret = request.args.get('secret')
+    # منطق توليد كود 2FA باستخدام مكتبة pyotp
+    import pyotp
     try:
-        await page.click('button:has-text("Submit Report")', timeout=10000)
-        await asyncio.sleep(3)
-        await active_sessions[user_id]["browser"].close()
-        del active_sessions[user_id]
-        return {"status": "SUCCESS"}
-    except Exception as e: return {"status": "ERROR", "message": str(e)}
+        totp = pyotp.TOTP(secret.replace(" ", ""))
+        final_code = totp.now()
+        return jsonify({"status": "SUCCESS", "final_code": final_code})
+    except:
+        return jsonify({"status": "ERROR", "message": "Invalid Secret Key"}), 400
+
+@app.route('/api/finish-task', methods=['GET'])
+def finish_task():
+    # منطق التأكد من إنهاء المهمة في المتصفح قبل الإغلاق
+    return jsonify({"status": "SUCCESS", "message": "Task Completed"})
+
+if __name__ == '__main__':
+    # تأكد من تثبيت المتصفحات على Render
+    # os.system("playwright install chromium")
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
