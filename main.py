@@ -8,7 +8,7 @@ from playwright.async_api import async_playwright
 
 app = FastAPI()
 
-# تفعيل الـ CORS للسماح للتطبيق بالاتصال
+# إعدادات CORS للسماح للتطبيق بالاتصال بالسيرفر
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,28 +17,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# بيانات تسجيل الدخول للموقع الهدف
+# بيانات الموقع الهدف
 LOGIN_URL = "https://webearn.top/login"
 INSTA_TASK_URL = "https://webearn.top/task/6c9c98df-1078-4149-a376-607bd0f22df5/start"
 WEB_USER = "ddraw"
 WEB_PASS = "m570991m"
 
+# تخزين الجلسات النشطة (المتصفحات المفتوحة)
 active_sessions = {}
 
-# وظيفة التأكد من تثبيت المتصفح عند بدء التشغيل
+# وظيفة تنصيب المتصفح تلقائياً عند بدء التشغيل
 def install_browser():
     try:
-        print("Starting Playwright browser installation...")
+        print("Checking/Installing Playwright Chromium...")
         subprocess.run(["playwright", "install", "chromium"], check=True)
-        print("Browser installed successfully.")
     except Exception as e:
-        print(f"Browser installation skipped or failed: {e}")
+        print(f"Installation info: {e}")
 
 install_browser()
 
 @app.get("/")
 async def root():
-    return {"status": "online", "message": "Server is Running"}
+    return {"status": "online", "message": "Taskify Server is Live"}
 
 @app.get("/api/start-task")
 async def start_task(user_id: str):
@@ -46,13 +46,12 @@ async def start_task(user_id: str):
     browser = None
     try:
         p = await async_playwright().start()
-        # إعدادات التشغيل في البيئة السحابية (Render)
         browser = await p.chromium.launch(
             headless=True, 
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
         )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"
         )
         page = await context.new_page()
 
@@ -63,11 +62,11 @@ async def start_task(user_id: str):
         await page.click('button[type="submit"]')
         await page.wait_for_load_state("networkidle")
         
-        # 2. الانتقال لصفحة المهمة
+        # 2. الانتقال للمهمة
         await page.goto(INSTA_TASK_URL, timeout=60000)
         await asyncio.sleep(5) 
 
-        # 3. استخراج البيانات
+        # 3. استخراج البيانات (User, Pass, Email, Name)
         text_content = await page.evaluate("() => document.body.innerText")
         res_data = {"user": "N/A", "pass": "N/A", "email": "N/A", "first_name": "N/A"}
         
@@ -81,6 +80,7 @@ async def start_task(user_id: str):
         emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
         res_data["email"] = emails[0] if emails else "N/A"
 
+        # حفظ الجلسة لاستخدامها في المراحل التالية
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res_data}
 
@@ -92,11 +92,10 @@ async def start_task(user_id: str):
 @app.get("/api/get-otp")
 async def get_otp(user_id: str):
     if user_id not in active_sessions:
-        return {"status": "ERROR", "message": "No session found"}
-    
+        return {"status": "ERROR", "message": "No session"}
     page = active_sessions[user_id]["page"]
     try:
-        await page.click("#getCodeBtn", timeout=5000)
+        await page.click("#getCodeBtn", timeout=5000) # الضغط على زر الكود بالموقع
         for _ in range(12): 
             await asyncio.sleep(5)
             otp_code = await page.evaluate("""() => {
@@ -104,7 +103,39 @@ async def get_otp(user_id: str):
                 return match ? match[0] : null;
             }""")
             if otp_code: return {"status": "SUCCESS", "code": otp_code}
-        
-        return {"status": "RETRY", "message": "الرمز لم يجهز بعد"}
+        return {"status": "RETRY"}
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
+
+@app.get("/api/submit-2fa")
+async def submit_2fa(user_id: str, secret: str):
+    if user_id not in active_sessions: return {"status": "ERROR"}
+    page = active_sessions[user_id]["page"]
+    try:
+        # إدخال السيكريت بالموقع والضغط على التوليد
+        await page.fill('input[placeholder*="2FA"]', secret) 
+        await page.click('button:has-text("Generate")', timeout=5000)
+        await asyncio.sleep(4)
+        
+        # جلب الكود النهائي من الموقع
+        final_code = await page.evaluate("""() => {
+            const match = document.body.innerText.match(/\\b\\d{6,8}\\b/);
+            return match ? match[0] : "لم يظهر كود";
+        }""")
+        return {"status": "SUCCESS", "final_code": final_code}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
+
+@app.get("/api/finish-task")
+async def finish_task(user_id: str):
+    if user_id not in active_sessions: return {"status": "ERROR"}
+    page = active_sessions[user_id]["page"]
+    try:
+        await page.click('button:has-text("Finish")', timeout=5000)
+        # إغلاق المتصفح بعد الإنهاء لتوفير موارد السيرفر
+        await active_sessions[user_id]["browser"].close()
+        await active_sessions[user_id]["p"].stop()
+        del active_sessions[user_id]
+        return {"status": "SUCCESS"}
+    except:
+        return {"status": "ERROR"}
