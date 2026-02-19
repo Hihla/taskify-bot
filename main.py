@@ -28,16 +28,11 @@ def ensure_browsers():
 
 ensure_browsers()
 
-@app.get("/")
-async def health():
-    return {"status": "Ready to hunt!"}
-
 @app.get("/api/start-task")
 async def start_task(user_id: str, task_type: str = "instagram"):
     async with async_playwright() as p:
-        # تشغيل المتصفح مع إعدادات تجنب الكشف
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        context = await browser.new_context(viewport={'width': 1280, 'height': 800})
         page = await context.new_page()
 
         try:
@@ -48,63 +43,50 @@ async def start_task(user_id: str, task_type: str = "instagram"):
             await page.click('button[type="submit"]')
             await page.wait_for_load_state("networkidle")
             
-            # 2. البحث عن الزر بأكثر من طريقة (بدون تعقيد)
-            # جربنا نحدد Instagram وفشل، الآن سنجرب نضغط على أي زر "بدء مهمة" متاح
-            selectors = [
-                'button:has-text("Start Task")',
-                'button:has-text("Start")',
-                'a:has-text("Start Task")',
-                '.btn-success', # غالباً أزرار البدء تكون خضراء
-                'button[type="button"]'
-            ]
+            # 2. الضغط على زر المهمة (استهداف دقيق)
+            # سنبحث عن زر Start Task الذي لا يتبعه كلمة Home أو Dashboard
+            task_btn = page.locator('button:has-text("Start Task"), .btn-success, a:has-text("Start")').first
+            await task_btn.click()
             
-            found = False
-            for selector in selectors:
-                try:
-                    btn = page.locator(selector).first
-                    if await btn.is_visible(timeout=5000):
-                        await btn.click()
-                        found = True
-                        break
-                except:
-                    continue
+            # 3. الانتظار الذهبي (زيادة الوقت لضمان ظهور اليوزر والباسورد الحقيقيين)
+            await asyncio.sleep(12) 
+
+            # 4. استخراج البيانات من "حقول الإدخال" أولاً (لأنها الأضمن)
+            # أغلب المواقع تضع اليوزر والباسورد داخل <input readonly>
+            raw_inputs = await page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('input'))
+                            .map(el => el.value)
+                            .filter(v => v && v.length > 3 && !v.includes('http'));
+            }""")
+
+            # 5. استخراج النصوص (فلترة الكلمات العامة مثل Home و WebEarn)
+            all_text = await page.evaluate("() => document.body.innerText")
+            lines = [l.strip() for l in all_text.split('\n') if len(l.strip()) > 3]
             
-            if not found:
-                # إذا فشل، جرب الضغط على أول زر يظهر في الصفحة بعد تسجيل الدخول
-                await page.click("button")
-            
-            # 3. صيد البيانات (Deep Extraction)
-            await asyncio.sleep(10) # وقت كافٍ لتحميل المهمة
-            
-            all_texts = await page.evaluate("() => document.body.innerText")
-            lines = [l.strip() for l in all_texts.split('\n') if len(l.strip()) > 2]
-            
+            # منع الكلمات المزعجة التي ظهرت لك
+            forbidden = ["Home", "WebEarn", "Dashboard", "Logout", "Menu", "Navigation"]
+            clean_lines = [l for l in lines if not any(f in l for f in forbidden)]
+
             acc_data = {"user": "N/A", "pass": "N/A", "name": "N/A", "email": "N/A"}
             
-            # استخراج الإيميل بالـ Regex (أضمن طريقة)
-            emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', all_texts)
+            # صيد الإيميل بالـ Regex
+            emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', all_text)
             acc_data["email"] = emails[0] if emails else "N/A"
-            
-            # محاكاة منطق البوت القديم في سحب الباقي
-            try:
-                for i, line in enumerate(lines):
-                    if "LOGIN" in line.upper(): acc_data["user"] = lines[i+1]
-                    if "PASSWORD" in line.upper(): acc_data["pass"] = lines[i+1]
-                    if "FIRST NAME" in line.upper(): acc_data["name"] = lines[i+1]
-            except: pass
 
-            # إذا بقيت القيم N/A، نسحب أول نصوص تظهر (كما فعل كودك القديم)
-            if acc_data["user"] == "N/A" and len(lines) > 5:
-                acc_data["user"] = lines[0]
-                acc_data["pass"] = lines[1]
-
-            # تنظيف "COPY"
-            for k in acc_data:
-                acc_data[k] = acc_data[k].replace("COPY", "").replace("copy", "").strip()
+            # إذا وجدنا مدخلات (Inputs)، فهي الأولوية
+            if len(raw_inputs) >= 2:
+                acc_data["user"] = raw_inputs[0]
+                acc_data["pass"] = raw_inputs[1]
+                if len(raw_inputs) > 2: acc_data["name"] = raw_inputs[2]
+            else:
+                # محاولة أخيرة من النصوص المفلترة
+                if len(clean_lines) >= 2:
+                    acc_data["user"] = clean_lines[0]
+                    acc_data["pass"] = clean_lines[1]
 
             await browser.close()
             return {"status": "READY", "data": acc_data}
 
         except Exception as e:
             await browser.close()
-            return {"status": "ERROR", "message": f"حدث خطأ أثناء التنفيذ: {str(e)}"}
+            return {"status": "ERROR", "message": str(e)}
