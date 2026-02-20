@@ -58,37 +58,51 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         await page.goto(target_url, timeout=60000)
         await asyncio.sleep(8) # انتظار تحميل البيانات بالكامل
 
-        # استخراج البيانات بذكاء (دعم الحقول الإضافية)
+        # 3. استخراج البيانات بذكاء شديد
         text_content = await page.evaluate("() => document.body.innerText")
         
-        # استخراج كافة الإيميلات الموجودة في الصفحة (الأول جيميل، الثاني استرداد)
-        found_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
+        # استخراج كافة الإيميلات
+        all_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
         
         res = {
             "email": "N/A",
             "password": "N/A",
             "first_name": "N/A",
-            "recovery_email": "N/A",
-            "user": "N/A"
+            "recovery_email": "N/A"
         }
 
-        # فرز الإيميلات
-        for mail in found_emails:
+        # فرز الإيميلات: الأول جيميل والباقي استرداد
+        for mail in all_emails:
             if "@gmail.com" in mail and res["email"] == "N/A":
                 res["email"] = mail
-            elif res["recovery_email"] == "N/A":
+            elif mail != res["email"]:
                 res["recovery_email"] = mail
 
-        # البحث في النصوص عن القيم بجانب العناوين
+        # تحليل الأسطر لجلب الباسورد والاسم
         lines = [l.strip() for l in text_content.split('\n') if l.strip()]
         for i, line in enumerate(lines):
             l_up = line.upper()
-            if "PASSWORD" in l_up and i+1 < len(lines):
+            
+            # صيد كلمة السر (نبحث عن السطر اللي بعد كلمة PASSWORD)
+            if "PASSWORD" in l_up and i + 1 < len(lines):
                 res["password"] = lines[i+1].replace("COPY", "").strip()
-            if "FIRST NAME" in l_up and i+1 < len(lines):
+            
+            # صيد الاسم (نبحث عن السطر اللي بعد FIRST NAME)
+            if "FIRST NAME" in l_up and i + 1 < len(lines):
                 res["first_name"] = lines[i+1].replace("COPY", "").strip()
-            if ("LOGIN" in l_up or "USERNAME" in l_up) and i+1 < len(lines):
-                res["user"] = lines[i+1].replace("COPY", "").strip()
+            
+            # تأكيد إضافي لبريد الاسترداد (لو فشل الـ Regex)
+            if ("REZ MAIL" in l_up or "RECOVERY" in l_up) and i + 1 < len(lines):
+                potential_recovery = lines[i+1].replace("COPY", "").strip()
+                if "@" in potential_recovery:
+                    res["recovery_email"] = potential_recovery
+
+        # إذا لسا كلمة السر N/A، نبحث عن أي نص عشوائي مشفر قريب من حقل الباسورد
+        if res["password"] == "N/A":
+            for line in lines:
+                if any(c.isdigit() for c in line) and any(c.isupper() for c in line) and len(line) > 6 and "@" not in line:
+                    res["password"] = line.replace("COPY", "").strip()
+                    break
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res}
@@ -130,3 +144,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"--- Sniper Server Starting on port {port} ---")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
