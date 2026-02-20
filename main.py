@@ -15,7 +15,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# حل مشكلة المسار في ريندر (Executable doesn't exist)
+# حل مشكلة المسار في ريندر
 PW_PATH = os.path.join(os.getcwd(), "pw-browsers")
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PW_PATH
 
@@ -31,56 +31,64 @@ active_sessions = {}
 
 @app.get("/")
 async def root():
-    return {"status": "online", "message": "Sniper is ready", "path": PW_PATH}
+    return {"status": "online", "message": "Sniper is ready"}
 
 @app.get("/api/start-task")
-async def start_task(user_id: str, task_type: str = "instagram"):
+async def start_task(user_id: str, task_type: str = "gmail"):
     p = None
     browser = None
     try:
         p = await async_playwright().start()
-        # تشغيل المتصفح مع تجاهل أخطاء الـ GPU والشهادات
         browser = await p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-gpu", "--single-process", "--disable-setuid-sandbox"]
+            args=["--no-sandbox", "--disable-gpu", "--single-process"]
         )
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # 1. تسجيل الدخول
+        # تسجيل الدخول
         await page.goto(LOGIN_URL, timeout=60000)
         await page.fill('input[name="username"]', WEB_USER)
         await page.fill('input[name="password"]', WEB_PASS)
         await page.click('button[type="submit"]')
         await page.wait_for_load_state("networkidle")
         
-        # 2. التوجه للمهمة (جيميل أو غيره)
-        target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["instagram"])
+        # التوجه للمهمة
+        target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["gmail"])
         await page.goto(target_url, timeout=60000)
-        
-        # انتظار إضافي للجيميل لأن بياناته تتأخر في الظهور
-        await asyncio.sleep(10) 
+        await asyncio.sleep(8) # انتظار تحميل البيانات بالكامل
 
-        # 3. استخراج البيانات بذكاء (البحث عن النصوص القريبة من العناوين)
-        content = await page.content()
-        text = await page.evaluate("() => document.body.innerText")
+        # استخراج البيانات بذكاء (دعم الحقول الإضافية)
+        text_content = await page.evaluate("() => document.body.innerText")
         
-        res = {"user": "N/A", "pass": "N/A", "email": "N/A", "name": "N/A"}
+        # استخراج كافة الإيميلات الموجودة في الصفحة (الأول جيميل، الثاني استرداد)
+        found_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
         
-        # استخراج الإيميل باستخدام Regex (أدق طريقة للجيميل)
-        emails = re.findall(r'[a-zA-Z0-9_.+-]+@gmail\.com', text)
-        if emails: res["email"] = emails[0]
+        res = {
+            "email": "N/A",
+            "password": "N/A",
+            "first_name": "N/A",
+            "recovery_email": "N/A",
+            "user": "N/A"
+        }
 
-        # استخراج الباسورد واليوزر عبر البحث عن الكلمات الدلالية
-        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        # فرز الإيميلات
+        for mail in found_emails:
+            if "@gmail.com" in mail and res["email"] == "N/A":
+                res["email"] = mail
+            elif res["recovery_email"] == "N/A":
+                res["recovery_email"] = mail
+
+        # البحث في النصوص عن القيم بجانب العناوين
+        lines = [l.strip() for l in text_content.split('\n') if l.strip()]
         for i, line in enumerate(lines):
-            line_up = line.upper()
-            if "LOGIN" in line_up or "USERNAME" in line_up:
-                if i+1 < len(lines): res["user"] = lines[i+1].replace("COPY", "").strip()
-            if "PASSWORD" in line_up:
-                if i+1 < len(lines): res["pass"] = lines[i+1].replace("COPY", "").strip()
-            if "NAME" in line_up:
-                if i+1 < len(lines): res["name"] = lines[i+1].replace("COPY", "").strip()
+            l_up = line.upper()
+            if "PASSWORD" in l_up and i+1 < len(lines):
+                res["password"] = lines[i+1].replace("COPY", "").strip()
+            if "FIRST NAME" in l_up and i+1 < len(lines):
+                res["first_name"] = lines[i+1].replace("COPY", "").strip()
+            if ("LOGIN" in l_up or "USERNAME" in l_up) and i+1 < len(lines):
+                res["user"] = lines[i+1].replace("COPY", "").strip()
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res}
@@ -89,24 +97,30 @@ async def start_task(user_id: str, task_type: str = "instagram"):
         if browser: await browser.close()
         return {"status": "ERROR", "message": str(e)}
 
-@app.get("/api/get-otp")
-async def get_otp(user_id: str):
+# إنهاء المهمة أو الرجوع في حال الخطأ
+@app.get("/api/finish-task")
+async def finish_task(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # محاولة الضغط على زر التوليد إذا وجد
-        await page.evaluate("""() => {
-            const btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('OTP') || b.innerText.includes('Generate'));
-            if(btn) btn.click();
-        }""")
-        await asyncio.sleep(5)
-        
-        text = await page.evaluate("() => document.body.innerText")
-        code = re.search(r'\b\d{6}\b', text)
-        return {"status": "SUCCESS", "code": code.group(0)} if code else {"status": "WAITING"}
-    except:
-        return {"status": "ERROR"}
+        # 1. محاولة الضغط على Submit Report
+        submit_btn = page.locator('button:has-text("Submit Report")')
+        if await submit_btn.count() > 0:
+            await submit_btn.click()
+            await asyncio.sleep(3)
+            
+        # 2. فحص إذا ظهرت رسالة خطأ (مثل التي في الصورة الثانية)
+        error_msg = page.locator('text=This email does not exist')
+        if await error_msg.count() > 0:
+            # إذا ظهر خطأ، نضغط على Back to Task
+            back_btn = page.locator('button:has-text("Back to Task")')
+            if await back_btn.count() > 0:
+                await back_btn.click()
+            return {"status": "RETRY_NEEDED", "message": "Email validation failed"}
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        await active_sessions[user_id]["browser"].close()
+        await active_sessions[user_id]["p"].stop()
+        del active_sessions[user_id]
+        return {"status": "SUCCESS"}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
