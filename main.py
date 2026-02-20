@@ -36,53 +36,53 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # تسجيل الدخول
         await page.goto(LOGIN_URL, timeout=60000)
         await page.fill('input[name="username"]', WEB_USER)
         await page.fill('input[name="password"]', WEB_PASS)
         await page.click('button[type="submit"]')
         await page.wait_for_load_state("networkidle")
         
-        # التوجه للمهمة
         target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["gmail"])
         await page.goto(target_url, timeout=60000)
-        
-        # انتظار "مقدس" لظهور الجداول (12 ثانية)
         await asyncio.sleep(12)
 
-        # --- السحب الذكي وفك الكتلة ---
         raw_text = await page.evaluate("() => document.body.innerText")
         
         res = {
             "email": "N/A",
             "password": "N/A",
             "first_name": "N/A",
-            "recovery_email": "N/A"
+            "recovery_email": "N/A",
+            "user": "N/A"
         }
 
-        # 1. صيد الإيميل الأساسي (أول جيميل)
-        email_match = re.search(r'[a-zA-Z0-9_.+-]+@gmail\.com', raw_text)
-        if email_match: res["email"] = email_match.group(0)
-
-        # 2. صيد الباسورد (ما بين كلمة PASSWORD وكلمة FIRST NAME)
-        pass_match = re.search(r'PASSWORD\n(.*?)\nFIRST NAME', raw_text, re.DOTALL)
-        if pass_match: res["password"] = pass_match.group(1).strip()
-
-        # 3. صيد الاسم الأول (ما بين كلمة FIRST NAME وكلمة REZ MAIL)
-        name_match = re.search(r'FIRST NAME\n(.*?)\nREZ MAIL', raw_text, re.DOTALL)
-        if name_match: res["first_name"] = name_match.group(1).strip()
-
-        # 4. صيد بريد الاسترداد (ما بين كلمة REZ MAIL وكلمة Task Instructions)
-        recovery_match = re.search(r'REZ MAIL\n(.*?)\n', raw_text)
-        if recovery_match: 
-            res["recovery_email"] = recovery_match.group(1).replace("COPY", "").strip()
+        # منطق سحب مخصص للانستا
+        if task_type.lower() == "instagram":
+            lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+            for i, line in enumerate(lines):
+                l_up = line.upper()
+                if "LOGIN" in l_up and i + 1 < len(lines):
+                    res["user"] = lines[i+1].replace("COPY", "").strip()
+                if "PASSWORD" in l_up and i + 1 < len(lines):
+                    res["password"] = lines[i+1].replace("COPY", "").strip()
+                if "EMAIL" in l_up and i + 1 < len(lines):
+                    res["email"] = lines[i+1].replace("COPY", "").strip()
+                if "FIRST NAME" in l_up and i + 1 < len(lines):
+                    res["first_name"] = lines[i+1].replace("COPY", "").strip()
+        
+        # منطق سحب مخصص للجيميل
         else:
-            # محاولة تانية لو كان الصيغة مختلفة
-            all_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', raw_text)
-            for m in all_emails:
-                if "@gmail.com" not in m.lower():
-                    res["recovery_email"] = m
-                    break
+            email_match = re.search(r'EMAIL\n(.*?)\n', raw_text, re.IGNORECASE)
+            if email_match: res["email"] = email_match.group(1).replace("COPY", "").strip()
+            
+            pass_match = re.search(r'PASSWORD\n(.*?)\n', raw_text, re.IGNORECASE)
+            if pass_match: res["password"] = pass_match.group(1).replace("COPY", "").strip()
+            
+            name_match = re.search(r'FIRST NAME\n(.*?)\n', raw_text, re.IGNORECASE)
+            if name_match: res["first_name"] = name_match.group(1).replace("COPY", "").strip()
+            
+            recovery_match = re.search(r'REZ MAIL\n(.*?)\n', raw_text, re.IGNORECASE)
+            if recovery_match: res["recovery_email"] = recovery_match.group(1).replace("COPY", "").strip()
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res}
@@ -90,7 +90,6 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         if browser: await browser.close()
         return {"status": "ERROR", "message": str(e)}
 
-# --- دالة إنهاء المهمة والرجوع الذكي ---
 @app.get("/api/finish-task")
 async def finish_task(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
@@ -107,11 +106,9 @@ async def finish_task(user_id: str):
         }""")
 
         if error_detected:
-            # الضغط على زر الرجوع Back to Task
             back_btn = page.locator('button.primary, button:has-text("Back to Task")')
             if await back_btn.count() > 0:
                 await back_btn.click()
-                await asyncio.sleep(2)
             return {"status": "RETRY_NEEDED", "message": "Site rejected. Try again."}
 
         await active_sessions[user_id]["browser"].close()
@@ -122,7 +119,5 @@ async def finish_task(user_id: str):
         return {"status": "ERROR", "message": str(e)}
 
 if __name__ == "__main__":
-    # تأكد إن البورت هو 10000 لريندر
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
