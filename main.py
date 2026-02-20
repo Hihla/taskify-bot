@@ -39,14 +39,11 @@ async def start_task(user_id: str, task_type: str = "gmail"):
     browser = None
     try:
         p = await async_playwright().start()
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-gpu", "--single-process"]
-        )
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu", "--single-process"])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # تسجيل الدخول
+        # دخول الموقع
         await page.goto(LOGIN_URL, timeout=60000)
         await page.fill('input[name="username"]', WEB_USER)
         await page.fill('input[name="password"]', WEB_PASS)
@@ -57,45 +54,40 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["gmail"])
         await page.goto(target_url, timeout=60000)
         
-        # انتظار ذكي لظهور البيانات (ننتظر وجود كلمة PASSWORD)
-        try:
-            await page.wait_for_selector("text=PASSWORD", timeout=15000)
-        except:
-            pass
-        
-        await asyncio.sleep(5) # وقت أمان إضافي
+        # انتظار طويل شوي للتأكد إن كل شي ظهر (10 ثواني)
+        await asyncio.sleep(10)
 
-        # استخراج البيانات
+        # --- بداية السحب العميق ---
+        # 1. سحب كل النصوص
         text_content = await page.evaluate("() => document.body.innerText")
-        all_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
+        
+        # 2. سحب كل القيم من مربعات الإدخال (Inputs) - هاد هو السر!
+        input_values = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('input, textarea')).map(el => el.value);
+        }""")
+        all_data_string = text_content + " " + " ".join(input_values)
         
         res = {"email": "N/A", "password": "N/A", "first_name": "N/A", "recovery_email": "N/A"}
 
-        # فرز الإيميلات
-        for mail in all_emails:
-            if "@gmail.com" in mail.lower() and res["email"] == "N/A":
-                res["email"] = mail
-            elif mail.lower() != res["email"].lower():
-                res["recovery_email"] = mail
+        # سحب الإيميلات (Regex)
+        emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', all_data_string)
+        for m in emails:
+            if "@gmail.com" in m.lower() and res["email"] == "N/A": res["email"] = m
+            elif m.lower() != res["email"].lower(): res["recovery_email"] = m
 
-        # تحليل النصوص بدقة
-        lines = [l.strip() for l in text_content.split('\n') if l.strip()]
-        for i, line in enumerate(lines):
-            l_up = line.upper()
-            if "PASSWORD" in l_up and i + 1 < len(lines):
-                res["password"] = lines[i+1].replace("COPY", "").strip()
-            if "FIRST NAME" in l_up and i + 1 < len(lines):
-                res["first_name"] = lines[i+1].replace("COPY", "").strip()
-            if ("REZ MAIL" in l_up or "RECOVERY" in l_up) and i + 1 < len(lines):
-                potential_recovery = lines[i+1].replace("COPY", "").strip()
-                if "@" in potential_recovery: res["recovery_email"] = potential_recovery
-
-        # فحص أخير للباسورد لو لسا N/A
-        if res["password"] == "N/A":
-            for line in lines:
-                if any(c.isdigit() for c in line) and any(c.isupper() for c in line) and len(line) > 6 and "@" not in line and "COPY" not in line:
-                    res["password"] = line.strip()
-                    break
+        # سحب الباسورد والاسم من الـ Inputs مباشرة
+        # غالباً الموقع بيحط الباسورد في حقل جنبه كلمة "copy"
+        for val in input_values:
+            val = val.strip()
+            if not val or len(val) < 4: continue
+            
+            # إذا كان النص فيه أرقام وحروف كبيرة وصغيرة (احتمال كبير باسورد)
+            if any(c.isdigit() for c in val) and any(c.isupper() for c in val) and "@" not in val:
+                if res["password"] == "N/A": res["password"] = val
+            
+            # إذا كان نص بسيط (احتمال اسم)
+            if val.isalpha() and len(val) < 15 and res["first_name"] == "N/A" and val.lower() not in ["copy", "submit"]:
+                res["first_name"] = val
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res}
@@ -144,3 +136,4 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
