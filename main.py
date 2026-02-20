@@ -95,29 +95,51 @@ async def finish_task(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        submit_btn = page.locator('button:has-text("Submit Report")')
+        # 1. محاكاة انتظار (كأن المستخدم ينسخ البيانات)
+        await asyncio.sleep(3)
+        
+        # 2. البحث عن زر الإرسال
+        submit_btn = page.locator('button:has-text("Submit Report"), button:has-text("Finish")')
+        
         if await submit_btn.count() > 0:
-            await submit_btn.click()
-            await asyncio.sleep(4)
+            # التمرير للزر ليصبح مرئياً (مهم جداً)
+            await submit_btn.scroll_into_view_if_needed()
+            await asyncio.sleep(1)
             
+            # الضغط على الزر
+            await submit_btn.click()
+            
+            # انتظار رد الفعل من الموقع (زيادة الوقت لـ 8 ثواني لضمان المعالجة)
+            await asyncio.sleep(8)
+            
+        # 3. فحص دقيق لرسائل الخطأ في الصفحة
         error_detected = await page.evaluate("""() => {
             const t = document.body.innerText.toLowerCase();
-            return t.includes("exist") || t.includes("properly") || t.includes("failed");
+            // الكلمات التي تعني فشل المهمة في الموقع
+            return t.includes("exist") || 
+                   t.includes("properly") || 
+                   t.includes("failed") || 
+                   t.includes("not completed") ||
+                   t.includes("error");
         }""")
 
         if error_detected:
-            back_btn = page.locator('button.primary, button:has-text("Back to Task")')
+            # محاولة العودة للمهمة لإتاحة المحاولة مرة أخرى
+            back_btn = page.locator('button:has-text("Back to Task"), .btn-secondary')
             if await back_btn.count() > 0:
                 await back_btn.click()
-            return {"status": "RETRY_NEEDED", "message": "Site rejected. Try again."}
+            return {"status": "RETRY_NEEDED", "message": "الموقع رفض التقرير، تأكد من تنفيذ الخطوات يدوياً أو انتظر قليلاً."}
 
+        # إذا لم نجد خطأ، نعتبر العملية نجحت
         await active_sessions[user_id]["browser"].close()
         await active_sessions[user_id]["p"].stop()
         del active_sessions[user_id]
         return {"status": "SUCCESS"}
+        
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
