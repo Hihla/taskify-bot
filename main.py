@@ -1,22 +1,13 @@
 import os
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 @app.get("/")
 async def root():
-    return {"status": "success", "message": "Server is LIVE now!"}
+    return {"status": "online", "message": "Sniping WebEarn..."}
 
-@app.get("/api/test")
-async def test():
-    return {"status": "ok"}
-
-# ملاحظة: شلنا كل كود Playwright المعقد مؤقتاً لنضمن التشغيل
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
