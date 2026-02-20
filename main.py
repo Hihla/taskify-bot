@@ -50,42 +50,42 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         # انتظار "مقدس" لظهور الجداول (12 ثانية)
         await asyncio.sleep(12)
 
-        # --- السحب الجراحي ---
-        # هاد الكود بيمشي على كل خلية في الجدول وبياخد اللي جنب العنوان
-        extracted_data = await page.evaluate("""() => {
-            let data = {};
-            let allElements = Array.from(document.querySelectorAll('td, th, span, div, b, p'));
-            
-            const findValue = (label) => {
-                let index = allElements.findIndex(el => el.innerText.toUpperCase().includes(label));
-                if (index !== -1 && allElements[index + 1]) {
-                    return allElements[index + 1].innerText.replace('COPY', '').trim();
-                }
-                return "N/A";
-            };
-
-            data.password = findValue("PASSWORD");
-            data.first_name = findValue("FIRST NAME");
-            data.recovery = findValue("REZ MAIL") === "N/A" ? findValue("RECOVERY") : findValue("REZ MAIL");
-            
-            // سحب الإيميل الأساسي (أول جيميل يظهر)
-            let bodyText = document.body.innerText;
-            let emailMatch = bodyText.match(/[a-zA-Z0-9_.+-]+@gmail\.com/);
-            data.email = emailMatch ? emailMatch[0] : "N/A";
-            
-            return data;
-        }""")
-
+        # --- السحب الذكي وفك الكتلة ---
+        raw_text = await page.evaluate("() => document.body.innerText")
+        
         res = {
-            "email": extracted_data.get("email", "N/A"),
-            "password": extracted_data.get("password", "N/A"),
-            "first_name": extracted_data.get("first_name", "N/A"),
-            "recovery_email": extracted_data.get("recovery", "N/A")
+            "email": "N/A",
+            "password": "N/A",
+            "first_name": "N/A",
+            "recovery_email": "N/A"
         }
+
+        # 1. صيد الإيميل الأساسي (أول جيميل)
+        email_match = re.search(r'[a-zA-Z0-9_.+-]+@gmail\.com', raw_text)
+        if email_match: res["email"] = email_match.group(0)
+
+        # 2. صيد الباسورد (ما بين كلمة PASSWORD وكلمة FIRST NAME)
+        pass_match = re.search(r'PASSWORD\n(.*?)\nFIRST NAME', raw_text, re.DOTALL)
+        if pass_match: res["password"] = pass_match.group(1).strip()
+
+        # 3. صيد الاسم الأول (ما بين كلمة FIRST NAME وكلمة REZ MAIL)
+        name_match = re.search(r'FIRST NAME\n(.*?)\nREZ MAIL', raw_text, re.DOTALL)
+        if name_match: res["first_name"] = name_match.group(1).strip()
+
+        # 4. صيد بريد الاسترداد (ما بين كلمة REZ MAIL وكلمة Task Instructions)
+        recovery_match = re.search(r'REZ MAIL\n(.*?)\n', raw_text)
+        if recovery_match: 
+            res["recovery_email"] = recovery_match.group(1).replace("COPY", "").strip()
+        else:
+            # محاولة تانية لو كان الصيغة مختلفة
+            all_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', raw_text)
+            for m in all_emails:
+                if "@gmail.com" not in m.lower():
+                    res["recovery_email"] = m
+                    break
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res}
-
     except Exception as e:
         if browser: await browser.close()
         return {"status": "ERROR", "message": str(e)}
@@ -125,3 +125,4 @@ if __name__ == "__main__":
     # تأكد إن البورت هو 10000 لريندر
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
