@@ -56,52 +56,45 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         # التوجه للمهمة
         target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["gmail"])
         await page.goto(target_url, timeout=60000)
-        await asyncio.sleep(8) # انتظار تحميل البيانات بالكامل
-
-        # 3. استخراج البيانات بذكاء شديد
-        text_content = await page.evaluate("() => document.body.innerText")
         
-        # استخراج كافة الإيميلات
+        # انتظار ذكي لظهور البيانات (ننتظر وجود كلمة PASSWORD)
+        try:
+            await page.wait_for_selector("text=PASSWORD", timeout=15000)
+        except:
+            pass
+        
+        await asyncio.sleep(5) # وقت أمان إضافي
+
+        # استخراج البيانات
+        text_content = await page.evaluate("() => document.body.innerText")
         all_emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
         
-        res = {
-            "email": "N/A",
-            "password": "N/A",
-            "first_name": "N/A",
-            "recovery_email": "N/A"
-        }
+        res = {"email": "N/A", "password": "N/A", "first_name": "N/A", "recovery_email": "N/A"}
 
-        # فرز الإيميلات: الأول جيميل والباقي استرداد
+        # فرز الإيميلات
         for mail in all_emails:
-            if "@gmail.com" in mail and res["email"] == "N/A":
+            if "@gmail.com" in mail.lower() and res["email"] == "N/A":
                 res["email"] = mail
-            elif mail != res["email"]:
+            elif mail.lower() != res["email"].lower():
                 res["recovery_email"] = mail
 
-        # تحليل الأسطر لجلب الباسورد والاسم
+        # تحليل النصوص بدقة
         lines = [l.strip() for l in text_content.split('\n') if l.strip()]
         for i, line in enumerate(lines):
             l_up = line.upper()
-            
-            # صيد كلمة السر (نبحث عن السطر اللي بعد كلمة PASSWORD)
             if "PASSWORD" in l_up and i + 1 < len(lines):
                 res["password"] = lines[i+1].replace("COPY", "").strip()
-            
-            # صيد الاسم (نبحث عن السطر اللي بعد FIRST NAME)
             if "FIRST NAME" in l_up and i + 1 < len(lines):
                 res["first_name"] = lines[i+1].replace("COPY", "").strip()
-            
-            # تأكيد إضافي لبريد الاسترداد (لو فشل الـ Regex)
             if ("REZ MAIL" in l_up or "RECOVERY" in l_up) and i + 1 < len(lines):
                 potential_recovery = lines[i+1].replace("COPY", "").strip()
-                if "@" in potential_recovery:
-                    res["recovery_email"] = potential_recovery
+                if "@" in potential_recovery: res["recovery_email"] = potential_recovery
 
-        # إذا لسا كلمة السر N/A، نبحث عن أي نص عشوائي مشفر قريب من حقل الباسورد
+        # فحص أخير للباسورد لو لسا N/A
         if res["password"] == "N/A":
             for line in lines:
-                if any(c.isdigit() for c in line) and any(c.isupper() for c in line) and len(line) > 6 and "@" not in line:
-                    res["password"] = line.replace("COPY", "").strip()
+                if any(c.isdigit() for c in line) and any(c.isupper() for c in line) and len(line) > 6 and "@" not in line and "COPY" not in line:
+                    res["password"] = line.strip()
                     break
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
@@ -111,37 +104,43 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         if browser: await browser.close()
         return {"status": "ERROR", "message": str(e)}
 
-# إنهاء المهمة أو الرجوع في حال الخطأ
 @app.get("/api/finish-task")
 async def finish_task(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. محاولة الضغط على Submit Report
+        # 1. الضغط على Submit Report
         submit_btn = page.locator('button:has-text("Submit Report")')
         if await submit_btn.count() > 0:
             await submit_btn.click()
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
             
-        # 2. فحص إذا ظهرت رسالة خطأ (مثل التي في الصورة الثانية)
-        error_msg = page.locator('text=This email does not exist')
-        if await error_msg.count() > 0:
-            # إذا ظهر خطأ، نضغط على Back to Task
-            back_btn = page.locator('button:has-text("Back to Task")')
+        # 2. فحص رسالة الخطأ (Email does not exist / Please register account properly)
+        # استخدمنا فحص النص لضمان مسك أي رسالة فشل
+        error_detected = await page.evaluate("""() => {
+            const bodyText = document.body.innerText;
+            return bodyText.includes("does not exist") || bodyText.includes("properly") || bodyText.includes("failed");
+        }""")
+
+        if error_detected:
+            # إذا فشل، نضغط على زر Back to Task باستخدام الكلاس اللي بعته
+            back_btn = page.locator('button.primary:has-text("Back to Task")')
             if await back_btn.count() > 0:
                 await back_btn.click()
-            return {"status": "RETRY_NEEDED", "message": "Email validation failed"}
+                await asyncio.sleep(2)
+            
+            # ملاحظة: هنا ما بنسكر المتصفح (عشان يقدر يرجع يحاول)
+            return {"status": "RETRY_NEEDED", "message": "Site rejected data. Browser is still on task page."}
 
+        # 3. إذا لم يوجد خطأ، ننهي كل شيء
         await active_sessions[user_id]["browser"].close()
         await active_sessions[user_id]["p"].stop()
         del active_sessions[user_id]
         return {"status": "SUCCESS"}
+        
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
-        
-if __name__ == "__main__":
-    # ريندر بيستخدم بورت متغير، هاد السطر بيضمن إننا نسمع للبورت الصح
-    port = int(os.environ.get("PORT", 10000))
-    print(f"--- Sniper Server Starting on port {port} ---")
-    uvicorn.run(app, host="0.0.0.0", port=port)
 
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
