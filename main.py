@@ -43,55 +43,70 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # دخول الموقع
         await page.goto(LOGIN_URL, timeout=60000)
         await page.fill('input[name="username"]', WEB_USER)
         await page.fill('input[name="password"]', WEB_PASS)
         await page.click('button[type="submit"]')
         await page.wait_for_load_state("networkidle")
         
-        # التوجه للمهمة
         target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["gmail"])
         await page.goto(target_url, timeout=60000)
         
-        # انتظار طويل شوي للتأكد إن كل شي ظهر (10 ثواني)
+        # انتظار 10 ثواني كاملة عشان نضمن إن كل "الإطارات" والبيانات نزلت
         await asyncio.sleep(10)
 
-        # --- بداية السحب العميق ---
-        # 1. سحب كل النصوص
-        text_content = await page.evaluate("() => document.body.innerText")
-        
-        # 2. سحب كل القيم من مربعات الإدخال (Inputs) - هاد هو السر!
-        input_values = await page.evaluate("""() => {
-            return Array.from(document.querySelectorAll('input, textarea')).map(el => el.value);
+        # --- السحب الشامل (بما في ذلك الـ Iframes والـ Inputs) ---
+        data_dump = await page.evaluate("""() => {
+            let results = "";
+            // 1. سحب كل النصوص من الصفحة الأساسية
+            results += document.body.innerText + " ";
+            // 2. سحب كل قيم الـ Inputs
+            Array.from(document.querySelectorAll('input')).forEach(i => results += i.value + " ");
+            // 3. سحب النصوص من داخل أي Iframe (لو موجود)
+            Array.from(document.getElementsByTagName('iframe')).forEach(frame => {
+                try {
+                    results += frame.contentDocument.body.innerText + " ";
+                } catch(e) {}
+            });
+            return results;
         }""")
-        all_data_string = text_content + " " + " ".join(input_values)
-        
+
         res = {"email": "N/A", "password": "N/A", "first_name": "N/A", "recovery_email": "N/A"}
 
-        # سحب الإيميلات (Regex)
-        emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', all_data_string)
+        # استخدام Regex لصيد أي إيميل
+        emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', data_dump)
         for m in emails:
-            if "@gmail.com" in m.lower() and res["email"] == "N/A": res["email"] = m
-            elif m.lower() != res["email"].lower(): res["recovery_email"] = m
+            if "@gmail.com" in m.lower() and res["email"] == "N/A":
+                res["email"] = m
+            elif m.lower() != res["email"].lower() and res["recovery_email"] == "N/A":
+                res["recovery_email"] = m
 
-        # سحب الباسورد والاسم من الـ Inputs مباشرة
-        # غالباً الموقع بيحط الباسورد في حقل جنبه كلمة "copy"
-        for val in input_values:
-            val = val.strip()
-            if not val or len(val) < 4: continue
-            
-            # إذا كان النص فيه أرقام وحروف كبيرة وصغيرة (احتمال كبير باسورد)
-            if any(c.isdigit() for c in val) and any(c.isupper() for c in val) and "@" not in val:
-                if res["password"] == "N/A": res["password"] = val
-            
-            # إذا كان نص بسيط (احتمال اسم)
-            if val.isalpha() and len(val) < 15 and res["first_name"] == "N/A" and val.lower() not in ["copy", "submit"]:
-                res["first_name"] = val
+        # تحليل الأسطر بالبحث عن الكلمات الدلالية
+        lines = [l.strip() for l in data_dump.split(' ') if len(l.strip()) > 2]
+        for i, val in enumerate(lines):
+            v_up = val.upper()
+            # إذا لقينا كلمة باسورد، اللي بعدها هو القيمة (حتى لو كانت لازقة فيها)
+            if "PASSWORD" in v_up and i + 1 < len(lines):
+                res["password"] = lines[i+1].replace("COPY", "").strip()
+            if "FIRST" in v_up and i + 1 < len(lines):
+                res["first_name"] = lines[i+1].replace("NAME", "").replace("COPY", "").strip()
+            if "REZ" in v_up and i + 1 < len(lines):
+                res["recovery_email"] = lines[i+1].replace("MAIL", "").replace("COPY", "").strip()
+
+        # "فلتر الطوارئ" لو الباسورد لسا N/A
+        if res["password"] == "N/A":
+            for l in lines:
+                # الباسورد غالباً حروف وأرقام معقدة وبدون @
+                if len(l) > 7 and any(c.isdigit() for c in l) and any(c.isupper() for c in l) and "@" not in l:
+                    res["password"] = l
+                    break
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res}
 
+    except Exception as e:
+        if browser: await browser.close()
+        return {"status": "ERROR", "message": str(e)}
     except Exception as e:
         if browser: await browser.close()
         return {"status": "ERROR", "message": str(e)}
@@ -136,4 +151,5 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
