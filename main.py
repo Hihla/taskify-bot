@@ -7,15 +7,8 @@ from playwright.async_api import async_playwright
 import uvicorn
 
 app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# حل مشكلة المسار في ريندر
 PW_PATH = os.path.join(os.getcwd(), "pw-browsers")
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = PW_PATH
 
@@ -31,7 +24,7 @@ active_sessions = {}
 
 @app.get("/")
 async def root():
-    return {"status": "online", "message": "Sniper is ready"}
+    return {"status": "online", "message": "Sniper is live"}
 
 @app.get("/api/start-task")
 async def start_task(user_id: str, task_type: str = "gmail"):
@@ -43,63 +36,52 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
+        # تسجيل الدخول
         await page.goto(LOGIN_URL, timeout=60000)
         await page.fill('input[name="username"]', WEB_USER)
         await page.fill('input[name="password"]', WEB_PASS)
         await page.click('button[type="submit"]')
         await page.wait_for_load_state("networkidle")
         
+        # التوجه للمهمة
         target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["gmail"])
         await page.goto(target_url, timeout=60000)
         
-        # انتظار 10 ثواني كاملة عشان نضمن إن كل "الإطارات" والبيانات نزلت
-        await asyncio.sleep(10)
+        # انتظار "مقدس" لظهور الجداول (12 ثانية)
+        await asyncio.sleep(12)
 
-        # --- السحب الشامل (بما في ذلك الـ Iframes والـ Inputs) ---
-        data_dump = await page.evaluate("""() => {
-            let results = "";
-            // 1. سحب كل النصوص من الصفحة الأساسية
-            results += document.body.innerText + " ";
-            // 2. سحب كل قيم الـ Inputs
-            Array.from(document.querySelectorAll('input')).forEach(i => results += i.value + " ");
-            // 3. سحب النصوص من داخل أي Iframe (لو موجود)
-            Array.from(document.getElementsByTagName('iframe')).forEach(frame => {
-                try {
-                    results += frame.contentDocument.body.innerText + " ";
-                } catch(e) {}
-            });
-            return results;
+        # --- السحب الجراحي ---
+        # هاد الكود بيمشي على كل خلية في الجدول وبياخد اللي جنب العنوان
+        extracted_data = await page.evaluate("""() => {
+            let data = {};
+            let allElements = Array.from(document.querySelectorAll('td, th, span, div, b, p'));
+            
+            const findValue = (label) => {
+                let index = allElements.findIndex(el => el.innerText.toUpperCase().includes(label));
+                if (index !== -1 && allElements[index + 1]) {
+                    return allElements[index + 1].innerText.replace('COPY', '').trim();
+                }
+                return "N/A";
+            };
+
+            data.password = findValue("PASSWORD");
+            data.first_name = findValue("FIRST NAME");
+            data.recovery = findValue("REZ MAIL") === "N/A" ? findValue("RECOVERY") : findValue("REZ MAIL");
+            
+            // سحب الإيميل الأساسي (أول جيميل يظهر)
+            let bodyText = document.body.innerText;
+            let emailMatch = bodyText.match(/[a-zA-Z0-9_.+-]+@gmail\.com/);
+            data.email = emailMatch ? emailMatch[0] : "N/A";
+            
+            return data;
         }""")
 
-        res = {"email": "N/A", "password": "N/A", "first_name": "N/A", "recovery_email": "N/A"}
-
-        # استخدام Regex لصيد أي إيميل
-        emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', data_dump)
-        for m in emails:
-            if "@gmail.com" in m.lower() and res["email"] == "N/A":
-                res["email"] = m
-            elif m.lower() != res["email"].lower() and res["recovery_email"] == "N/A":
-                res["recovery_email"] = m
-
-        # تحليل الأسطر بالبحث عن الكلمات الدلالية
-        lines = [l.strip() for l in data_dump.split(' ') if len(l.strip()) > 2]
-        for i, val in enumerate(lines):
-            v_up = val.upper()
-            # إذا لقينا كلمة باسورد، اللي بعدها هو القيمة (حتى لو كانت لازقة فيها)
-            if "PASSWORD" in v_up and i + 1 < len(lines):
-                res["password"] = lines[i+1].replace("COPY", "").strip()
-            if "FIRST" in v_up and i + 1 < len(lines):
-                res["first_name"] = lines[i+1].replace("NAME", "").replace("COPY", "").strip()
-            if "REZ" in v_up and i + 1 < len(lines):
-                res["recovery_email"] = lines[i+1].replace("MAIL", "").replace("COPY", "").strip()
-
-        # "فلتر الطوارئ" لو الباسورد لسا N/A
-        if res["password"] == "N/A":
-            for l in lines:
-                # الباسورد غالباً حروف وأرقام معقدة وبدون @
-                if len(l) > 7 and any(c.isdigit() for c in l) and any(c.isupper() for c in l) and "@" not in l:
-                    res["password"] = l
-                    break
+        res = {
+            "email": extracted_data.get("email", "N/A"),
+            "password": extracted_data.get("password", "N/A"),
+            "first_name": extracted_data.get("first_name", "N/A"),
+            "recovery_email": extracted_data.get("recovery", "N/A")
+        }
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res}
@@ -107,49 +89,39 @@ async def start_task(user_id: str, task_type: str = "gmail"):
     except Exception as e:
         if browser: await browser.close()
         return {"status": "ERROR", "message": str(e)}
-    except Exception as e:
-        if browser: await browser.close()
-        return {"status": "ERROR", "message": str(e)}
 
+# --- دالة إنهاء المهمة والرجوع الذكي ---
 @app.get("/api/finish-task")
 async def finish_task(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. الضغط على Submit Report
         submit_btn = page.locator('button:has-text("Submit Report")')
         if await submit_btn.count() > 0:
             await submit_btn.click()
             await asyncio.sleep(4)
             
-        # 2. فحص رسالة الخطأ (Email does not exist / Please register account properly)
-        # استخدمنا فحص النص لضمان مسك أي رسالة فشل
         error_detected = await page.evaluate("""() => {
-            const bodyText = document.body.innerText;
-            return bodyText.includes("does not exist") || bodyText.includes("properly") || bodyText.includes("failed");
+            const t = document.body.innerText.toLowerCase();
+            return t.includes("exist") || t.includes("properly") || t.includes("failed");
         }""")
 
         if error_detected:
-            # إذا فشل، نضغط على زر Back to Task باستخدام الكلاس اللي بعته
-            back_btn = page.locator('button.primary:has-text("Back to Task")')
+            # الضغط على زر الرجوع Back to Task
+            back_btn = page.locator('button.primary, button:has-text("Back to Task")')
             if await back_btn.count() > 0:
                 await back_btn.click()
                 await asyncio.sleep(2)
-            
-            # ملاحظة: هنا ما بنسكر المتصفح (عشان يقدر يرجع يحاول)
-            return {"status": "RETRY_NEEDED", "message": "Site rejected data. Browser is still on task page."}
+            return {"status": "RETRY_NEEDED", "message": "Site rejected. Try again."}
 
-        # 3. إذا لم يوجد خطأ، ننهي كل شيء
         await active_sessions[user_id]["browser"].close()
         await active_sessions[user_id]["p"].stop()
         del active_sessions[user_id]
         return {"status": "SUCCESS"}
-        
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
 
 if __name__ == "__main__":
+    # تأكد إن البورت هو 10000 لريندر
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
