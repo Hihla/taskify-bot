@@ -124,3 +124,9 @@ async def finish_task(user_id: str):
         return {"status": "SUCCESS"}
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
+        
+if __name__ == "__main__":
+    # ريندر بيستخدم بورت متغير، هاد السطر بيضمن إننا نسمع للبورت الصح
+    port = int(os.environ.get("PORT", 10000))
+    print(f"--- Sniper Server Starting on port {port} ---")
+    uvicorn.run(app, host="0.0.0.0", port=port)
