@@ -105,38 +105,19 @@ async def start_task(user_id: str, task_type: str = "gmail"):
 
 @app.get("/api/get-otp")
 async def get_otp(user_id: str):
-    if user_id not in active_sessions: return {"status": "EXPIRED"}
+    if user_id not in active_sessions: return {"status": "ERROR"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. طباعة كل الأزرار الموجودة في الصفحة بالـ Logs لنعرف الزر الحقيقي
-        buttons = await page.evaluate("""() => {
-            return Array.from(document.querySelectorAll('button, a')).map(b => b.innerText.trim());
-        }""")
-        print(f"DEBUG: الأزرار الموجودة في الصفحة: {buttons}")
-
-        # 2. محاولة الضغط على أي زر فيه كلمة "Get" أو "رمز" أو "Code"
-        otp_btn = page.locator('button:has-text("Get Code"), button:has-text("Get OTP"), .btn-info, button:contains("كود"), button:contains("رمز")')
-        
-        if await otp_btn.count() > 0:
-            await otp_btn.first.click()
-            print("DEBUG: تم الضغط على زر جلب الكود")
-            await asyncio.sleep(8) 
-
-        # 3. صيد الأرقام المكونة من 4 إلى 8 خانات (احتياطاً)
-        raw_text = await page.evaluate("() => document.body.innerText")
-        print(f"DEBUG: محتوى الصفحة بعد الضغط: {raw_text[:500]}") # طباعة أول 500 حرف
-
-        codes = re.findall(r'\b\d{4,8}\b', raw_text.replace(" ", ""))
-        
-        if codes:
-            # نفلتر الأكواد عشان ما ناخد سنة (2025) أو رقم المهمة
-            valid_codes = [c for c in codes if c not in ["2025", "2026"]]
-            if valid_codes:
-                return {"status": "SUCCESS", "code": valid_codes[-1]}
-
-        return {"status": "ERROR", "message": "السيرفر ضغط الزر بس الكود ما ظهر بالنص"}
+        await page.click("#getCodeBtn", timeout=5000)
+        for _ in range(12): 
+            await asyncio.sleep(5)
+            otp_code = await page.evaluate("""() => {
+                const match = document.body.innerText.match(/\\b\\d{6}\\b/);
+                return match ? match[0] : null;
+            }""")
+            if otp_code: return {"status": "SUCCESS", "code": otp_code}
+        return {"status": "RETRY"}
     except Exception as e:
-        print(f"DEBUG ERROR: {str(e)}")
         return {"status": "ERROR", "message": str(e)}
 @app.get("/api/submit-2fa")
 async def submit_2fa(user_id: str, secret: str):
@@ -207,6 +188,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
