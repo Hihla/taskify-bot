@@ -97,22 +97,39 @@ async def get_otp(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # البحث عن زر جلب الكود (OTP) في صفحة الانستا
-        otp_btn = page.locator('button:has-text("Get Code"), button:has-text("Get OTP"), .btn-info')
+        # 1. محاولة الضغط على الزر بكل الصيغ الممكنة
+        otp_btn = page.locator('button:has-text("Get Code"), button:has-text("Get OTP"), .btn-info, button:has-text("طلب")')
         if await otp_btn.count() > 0:
+            await otp_btn.scroll_into_view_if_needed()
             await otp_btn.click()
-            await asyncio.sleep(6) # وقت كافي لظهور الكود
+            # انتظار وصول الكود (ممكن يحتاج وقت)
+            await asyncio.sleep(7) 
 
-        # استخراج الكود (غالباً 6 أرقام)
+        # 2. البحث عن الكود في كل مكان (نص، حقول إدخال، سمات)
+        # رح ندور على أي حقل إدخال فيه 6 أرقام
+        otp_from_input = await page.evaluate("""() => {
+            const inputs = Array.from(document.querySelectorAll('input'));
+            for (let i of inputs) {
+                if (i.value && /^\d{6}$/.test(i.value.trim())) return i.value.trim();
+            }
+            return null;
+        }""")
+
+        if otp_from_input:
+            return {"status": "SUCCESS", "code": otp_from_input}
+
+        # 3. إذا ما لقيناه بحقل، ندور بالنص العادي (Regex مطور)
         content = await page.evaluate("() => document.body.innerText")
-        # البحث عن نمط 6 أرقام متتالية
-        codes = re.findall(r'\b\d{6}\b', content)
+        # منشيل أي مسافات أو COPY لضمان دقة الـ Regex
+        clean_content = content.replace("COPY", "").strip()
+        codes = re.findall(r'\b\d{6}\b', clean_content)
+        
         if codes:
-            return {"status": "SUCCESS", "code": codes[-1]} # نأخذ آخر كود ظهر
-        return {"status": "ERROR", "message": "لم يظهر الكود بعد، حاول مجدداً"}
+            return {"status": "SUCCESS", "code": codes[-1]}
+
+        return {"status": "ERROR", "message": "لم يظهر الكود، تأكد من الضغط مرة أخرى أو انتظر قليلاً"}
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
-
 @app.get("/api/submit-2fa")
 async def submit_2fa(user_id: str, secret: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
@@ -182,3 +199,4 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
