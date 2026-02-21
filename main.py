@@ -108,20 +108,23 @@ async def get_otp(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. محاولة الضغط على الزر بكل الصيغ الممكنة
+        # 1. محاولة الضغط على الزر (بكل الأسماء الممكنة في الموقع)
+        # أضفت لك محاكاة للماوس عشان الموقع يحس بيك
         otp_btn = page.locator('button:has-text("Get Code"), button:has-text("Get OTP"), .btn-info, button:has-text("طلب")')
         if await otp_btn.count() > 0:
             await otp_btn.scroll_into_view_if_needed()
             await otp_btn.click()
-            # انتظار وصول الكود (ممكن يحتاج وقت)
-            await asyncio.sleep(7) 
+            # انتظار "مقدس" لظهور الكود (زودناه لـ 10 ثواني لضمان وصوله)
+            await asyncio.sleep(10) 
 
-        # 2. البحث عن الكود في كل مكان (نص، حقول إدخال، سمات)
-        # رح ندور على أي حقل إدخال فيه 6 أرقام
+        # 2. البحث عن الكود داخل حقول الإدخال (Inputs) - الطريقة الأضمن
+        # الموقع أحياناً بيحط الكود جوا Input عشان المستخدم يعمل Copy
         otp_from_input = await page.evaluate("""() => {
-            const inputs = Array.from(document.querySelectorAll('input'));
+            const inputs = Array.from(document.querySelectorAll('input, textarea'));
             for (let i of inputs) {
-                if (i.value && /^\d{6}$/.test(i.value.trim())) return i.value.trim();
+                // الكود غالباً بيكون 6 أرقام
+                const val = i.value.trim();
+                if (val && /^\d{6}$/.test(val)) return val;
             }
             return null;
         }""")
@@ -129,16 +132,20 @@ async def get_otp(user_id: str):
         if otp_from_input:
             return {"status": "SUCCESS", "code": otp_from_input}
 
-        # 3. إذا ما لقيناه بحقل، ندور بالنص العادي (Regex مطور)
+        # 3. إذا ما لقيناه بـ Input، ندور في كل نصوص الصفحة (Regex مطور)
         content = await page.evaluate("() => document.body.innerText")
-        # منشيل أي مسافات أو COPY لضمان دقة الـ Regex
-        clean_content = content.replace("COPY", "").strip()
-        codes = re.findall(r'\b\d{6}\b', clean_content)
         
-        if codes:
-            return {"status": "SUCCESS", "code": codes[-1]}
+        # تنظيف النص من الكلمات اللي ممكن تلخبط الـ Regex
+        clean_text = content.replace("COPY", "").replace(" ", "")
+        
+        # البحث عن أي سلسلة من 6 أرقام
+        all_codes = re.findall(r'\d{6}', clean_text)
+        
+        if all_codes:
+            # نأخذ آخر رقم ظهر (لأن الأرقام القديمة ممكن تكون تابعة للباسورد أو غيره)
+            return {"status": "SUCCESS", "code": all_codes[-1]}
 
-        return {"status": "ERROR", "message": "لم يظهر الكود، تأكد من الضغط مرة أخرى أو انتظر قليلاً"}
+        return {"status": "ERROR", "message": "الكود لسا ما ظهر، انتظر 5 ثواني واضغط طلب مرة تانية"}
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
 @app.get("/api/submit-2fa")
@@ -210,5 +217,6 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
