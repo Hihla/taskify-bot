@@ -108,45 +108,35 @@ async def get_otp(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. محاولة الضغط على الزر (بكل الأسماء الممكنة في الموقع)
-        # أضفت لك محاكاة للماوس عشان الموقع يحس بيك
-        otp_btn = page.locator('button:has-text("Get Code"), button:has-text("Get OTP"), .btn-info, button:has-text("طلب")')
-        if await otp_btn.count() > 0:
-            await otp_btn.scroll_into_view_if_needed()
-            await otp_btn.click()
-            # انتظار "مقدس" لظهور الكود (زودناه لـ 10 ثواني لضمان وصوله)
-            await asyncio.sleep(10) 
-
-        # 2. البحث عن الكود داخل حقول الإدخال (Inputs) - الطريقة الأضمن
-        # الموقع أحياناً بيحط الكود جوا Input عشان المستخدم يعمل Copy
-        otp_from_input = await page.evaluate("""() => {
-            const inputs = Array.from(document.querySelectorAll('input, textarea'));
-            for (let i of inputs) {
-                // الكود غالباً بيكون 6 أرقام
-                const val = i.value.trim();
-                if (val && /^\d{6}$/.test(val)) return val;
-            }
-            return null;
+        # 1. طباعة كل الأزرار الموجودة في الصفحة بالـ Logs لنعرف الزر الحقيقي
+        buttons = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('button, a')).map(b => b.innerText.trim());
         }""")
+        print(f"DEBUG: الأزرار الموجودة في الصفحة: {buttons}")
 
-        if otp_from_input:
-            return {"status": "SUCCESS", "code": otp_from_input}
+        # 2. محاولة الضغط على أي زر فيه كلمة "Get" أو "رمز" أو "Code"
+        otp_btn = page.locator('button:has-text("Get Code"), button:has-text("Get OTP"), .btn-info, button:contains("كود"), button:contains("رمز")')
+        
+        if await otp_btn.count() > 0:
+            await otp_btn.first.click()
+            print("DEBUG: تم الضغط على زر جلب الكود")
+            await asyncio.sleep(8) 
 
-        # 3. إذا ما لقيناه بـ Input، ندور في كل نصوص الصفحة (Regex مطور)
-        content = await page.evaluate("() => document.body.innerText")
-        
-        # تنظيف النص من الكلمات اللي ممكن تلخبط الـ Regex
-        clean_text = content.replace("COPY", "").replace(" ", "")
-        
-        # البحث عن أي سلسلة من 6 أرقام
-        all_codes = re.findall(r'\d{6}', clean_text)
-        
-        if all_codes:
-            # نأخذ آخر رقم ظهر (لأن الأرقام القديمة ممكن تكون تابعة للباسورد أو غيره)
-            return {"status": "SUCCESS", "code": all_codes[-1]}
+        # 3. صيد الأرقام المكونة من 4 إلى 8 خانات (احتياطاً)
+        raw_text = await page.evaluate("() => document.body.innerText")
+        print(f"DEBUG: محتوى الصفحة بعد الضغط: {raw_text[:500]}") # طباعة أول 500 حرف
 
-        return {"status": "ERROR", "message": "الكود لسا ما ظهر، انتظر 5 ثواني واضغط طلب مرة تانية"}
+        codes = re.findall(r'\b\d{4,8}\b', raw_text.replace(" ", ""))
+        
+        if codes:
+            # نفلتر الأكواد عشان ما ناخد سنة (2025) أو رقم المهمة
+            valid_codes = [c for c in codes if c not in ["2025", "2026"]]
+            if valid_codes:
+                return {"status": "SUCCESS", "code": valid_codes[-1]}
+
+        return {"status": "ERROR", "message": "السيرفر ضغط الزر بس الكود ما ظهر بالنص"}
     except Exception as e:
+        print(f"DEBUG ERROR: {str(e)}")
         return {"status": "ERROR", "message": str(e)}
 @app.get("/api/submit-2fa")
 async def submit_2fa(user_id: str, secret: str):
@@ -217,6 +207,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
