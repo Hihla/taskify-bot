@@ -36,12 +36,14 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
+        # تسجيل الدخول
         await page.goto(LOGIN_URL, timeout=60000)
         await page.fill('input[name="username"]', WEB_USER)
         await page.fill('input[name="password"]', WEB_PASS)
         await page.click('button[type="submit"]')
         await page.wait_for_load_state("networkidle")
         
+        # التوجه للمهمة
         target_url = TASK_URLS.get(task_type.lower(), TASK_URLS["gmail"])
         await page.goto(target_url, timeout=60000)
         await asyncio.sleep(12)
@@ -90,32 +92,72 @@ async def start_task(user_id: str, task_type: str = "gmail"):
         if browser: await browser.close()
         return {"status": "ERROR", "message": str(e)}
 
+@app.get("/api/get-otp")
+async def get_otp(user_id: str):
+    if user_id not in active_sessions: return {"status": "EXPIRED"}
+    page = active_sessions[user_id]["page"]
+    try:
+        # البحث عن زر جلب الكود (OTP) في صفحة الانستا
+        otp_btn = page.locator('button:has-text("Get Code"), button:has-text("Get OTP"), .btn-info')
+        if await otp_btn.count() > 0:
+            await otp_btn.click()
+            await asyncio.sleep(6) # وقت كافي لظهور الكود
+
+        # استخراج الكود (غالباً 6 أرقام)
+        content = await page.evaluate("() => document.body.innerText")
+        # البحث عن نمط 6 أرقام متتالية
+        codes = re.findall(r'\b\d{6}\b', content)
+        if codes:
+            return {"status": "SUCCESS", "code": codes[-1]} # نأخذ آخر كود ظهر
+        return {"status": "ERROR", "message": "لم يظهر الكود بعد، حاول مجدداً"}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
+
+@app.get("/api/submit-2fa")
+async def submit_2fa(user_id: str, secret: str):
+    if user_id not in active_sessions: return {"status": "EXPIRED"}
+    page = active_sessions[user_id]["page"]
+    try:
+        # 1. الضغط على زر إضافة المصادقة الثنائية
+        auth_btn = page.locator('button:has-text("2FA"), button:has-text("Authentication")')
+        if await auth_btn.count() > 0:
+            await auth_btn.click()
+            await asyncio.sleep(2)
+
+        # 2. تعبئة السيكريت كود
+        input_field = page.locator('input[type="text"], .form-control').first
+        await input_field.fill(secret)
+        
+        # 3. زر توليد الكود
+        gen_btn = page.locator('button:has-text("Generate"), button:has-text("Submit")')
+        await gen_btn.click()
+        await asyncio.sleep(4)
+
+        # 4. سحب الكود المولد النهائي
+        final_content = await page.evaluate("() => document.body.innerText")
+        final_codes = re.findall(r'\b\d{6}\b', final_content)
+        if final_codes:
+            return {"status": "SUCCESS", "final_code": final_codes[-1]}
+        return {"status": "ERROR", "message": "فشل توليد كود المصادقة"}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
+
 @app.get("/api/finish-task")
 async def finish_task(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. محاكاة انتظار (كأن المستخدم ينسخ البيانات)
         await asyncio.sleep(3)
-        
-        # 2. البحث عن زر الإرسال
         submit_btn = page.locator('button:has-text("Submit Report"), button:has-text("Finish")')
         
         if await submit_btn.count() > 0:
-            # التمرير للزر ليصبح مرئياً (مهم جداً)
             await submit_btn.scroll_into_view_if_needed()
             await asyncio.sleep(1)
-            
-            # الضغط على الزر
             await submit_btn.click()
-            
-            # انتظار رد الفعل من الموقع (زيادة الوقت لـ 8 ثواني لضمان المعالجة)
             await asyncio.sleep(8)
             
-        # 3. فحص دقيق لرسائل الخطأ في الصفحة
         error_detected = await page.evaluate("""() => {
             const t = document.body.innerText.toLowerCase();
-            // الكلمات التي تعني فشل المهمة في الموقع
             return t.includes("exist") || 
                    t.includes("properly") || 
                    t.includes("failed") || 
@@ -124,13 +166,11 @@ async def finish_task(user_id: str):
         }""")
 
         if error_detected:
-            # محاولة العودة للمهمة لإتاحة المحاولة مرة أخرى
             back_btn = page.locator('button:has-text("Back to Task"), .btn-secondary')
             if await back_btn.count() > 0:
                 await back_btn.click()
-            return {"status": "RETRY_NEEDED", "message": "الموقع رفض التقرير، تأكد من تنفيذ الخطوات يدوياً أو انتظر قليلاً."}
+            return {"status": "RETRY_NEEDED", "message": "Site rejected. Try again."}
 
-        # إذا لم نجد خطأ، نعتبر العملية نجحت
         await active_sessions[user_id]["browser"].close()
         await active_sessions[user_id]["p"].stop()
         del active_sessions[user_id]
@@ -142,4 +182,3 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
