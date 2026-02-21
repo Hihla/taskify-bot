@@ -32,7 +32,18 @@ async def start_task(user_id: str, task_type: str = "gmail"):
     browser = None
     try:
         p = await async_playwright().start()
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu", "--single-process"])
+        # تعديل سطر التشغيل في start_task
+        browser = await p.chromium.launch(
+            headless=True, 
+            args=[
+                "--no-sandbox", 
+                "--disable-setuid-sandbox", 
+                "--disable-dev-shm-usage", # مهم جداً لريندر
+                "--disable-gpu",
+                "--no-zygote",
+                "--single-process" # بيوفر رامات كتير
+            ]
+        )
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
@@ -199,4 +210,5 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
