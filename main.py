@@ -124,29 +124,41 @@ async def submit_2fa(user_id: str, secret: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. الضغط على زر إضافة المصادقة الثنائية
-        auth_btn = page.locator('button:has-text("2FA"), button:has-text("Authentication")')
-        if await auth_btn.count() > 0:
-            await auth_btn.click()
-            await asyncio.sleep(2)
-
-        # 2. تعبئة السيكريت كود
-        input_field = page.locator('input[type="text"], .form-control').first
-        await input_field.fill(secret)
+        # 1. إدخال السيكريت في الحقل (باستخدام الـ Placeholder الظاهر في الصورة)
+        secret_input = page.locator('input[placeholder="Paste 2FA secret key..."]')
         
-        # 3. زر توليد الكود
-        gen_btn = page.locator('button:has-text("Generate"), button:has-text("Submit")')
-        await gen_btn.click()
-        await asyncio.sleep(4)
+        if await secret_input.count() > 0:
+            await secret_input.click() # للتركيز
+            await secret_input.fill("") # تنظيف
+            await secret_input.fill(secret)
+            await asyncio.sleep(1)
+        else:
+            return {"status": "ERROR", "message": "لم يتم العثور على حقل السيكريت"}
 
-        # 4. سحب الكود المولد النهائي
-        final_content = await page.evaluate("() => document.body.innerText")
-        final_codes = re.findall(r'\b\d{6}\b', final_content)
+        # 2. الضغط على الزر الأصفر الظاهر في الصورة
+        # نستخدم النص الكامل للزر لضمان الدقة
+        generate_btn = page.locator('button:has-text("Generate OTP Code")')
+        
+        if await generate_btn.count() > 0:
+            await generate_btn.click()
+            # انتظار ظهور الكود (الموقع يحتاج وقت للمعالجة)
+            await asyncio.sleep(6)
+        else:
+            return {"status": "ERROR", "message": "لم يتم العثور على زر التوليد"}
+
+        # 3. سحب الكود النهائي (الموقع سيقوم بتحديث النص في الصفحة ليظهر الرمز)
+        # سنبحث عن رقم مكون من 6 خانات يظهر بعد الضغط
+        content = await page.evaluate("() => document.body.innerText")
+        final_codes = re.findall(r'\b\d{6}\b', content)
+        
         if final_codes:
+            # نأخذ آخر كود ظهر (غالباً هو الكود المولد الجديد)
             return {"status": "SUCCESS", "final_code": final_codes[-1]}
-        return {"status": "ERROR", "message": "فشل توليد كود المصادقة"}
+        
+        return {"status": "ERROR", "message": "تم إرسال السيكريت ولكن لم يظهر كود الـ 6 أرقام"}
+
     except Exception as e:
-        return {"status": "ERROR", "message": str(e)}
+        return {"status": "ERROR", "message": str(e)}}
 
 @app.get("/api/finish-task")
 async def finish_task(user_id: str):
@@ -188,6 +200,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
