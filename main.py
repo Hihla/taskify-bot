@@ -124,36 +124,43 @@ async def submit_2fa(user_id: str, secret: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. استخدام الـ ID المباشر اللي شفناه بالصور (tfaSecret)
+        # --- خطوة العبور: الضغط على زر "التالي" لفتح صفحة السيكريت ---
+        # الصور أظهرت إن الزر ممكن يكون له id="otpGenBtn" أو نص معين
+        next_step_btn = page.locator('button:has-text("Next"), button:has-text("Continue"), #otpGenBtn, button:has-text("Submit")').first
+        
+        if await next_step_btn.count() > 0:
+            print("DEBUG: الضغط على زر الانتقال لصفحة المصادقة...")
+            await next_step_btn.click(force=True)
+            await asyncio.sleep(3) # انتظار فتح واجهة السيكريت
+
+        # --- خطوة تعبئة السيكريت (القوة الضاربة) ---
         secret_input = page.locator("#tfaSecret")
         
-        # التأكد من وجود العنصر حتى لو مخفي
+        # ننتظر الحقل يظهر (بما إننا ضغطنا التالي)
         await secret_input.wait_for(state="attached", timeout=10000)
         
-        # استخدام fill مع force=True لتجاوز مشكلة "العنصر غير مرئي"
+        # تعبئة السيكريت بالقوة لتجاوز "Visible Error"
         await secret_input.fill(secret, force=True)
-        print(f"DEBUG: تم تعبئة السيكريت بنجاح")
-        
-        # 2. الضغط على زر التوليد (Generate OTP Code)
-        # رح نستخدم القوة برضه عشان نتفادى الـ Timeout
-        gen_btn = page.locator('button:has-text("Generate OTP Code")')
-        await gen_btn.wait_for(state="attached", timeout=10000)
-        
-        # الضغط بالقوة
-        await gen_btn.click(force=True)
-        print("DEBUG: تم الضغط على زر التوليد بالقوة")
-        
-        # انتظار كافٍ لظهور الكود (8 ثواني)
-        await asyncio.sleep(8)
+        print("DEBUG: تم تعبئة السيكريت")
 
-        # 3. سحب الكود النهائي (أي 6 أرقام تظهر)
+        # --- خطوة التوليد النهائي ---
+        # من الصورة: id="otpGenBtn" والزر لونه أصفر
+        gen_btn = page.locator('button:has-text("Generate OTP Code"), #otpGenBtn').last 
+        
+        await gen_btn.scroll_into_view_if_needed()
+        await gen_btn.click(force=True)
+        print("DEBUG: تم الضغط على زر التوليد النهائي")
+        
+        await asyncio.sleep(7)
+
+        # سحب الكود المكون من 6 أرقام
         content = await page.evaluate("() => document.body.innerText")
         final_codes = re.findall(r'\b\d{6}\b', content)
         
         if final_codes:
             return {"status": "SUCCESS", "final_code": final_codes[-1]}
         
-        return {"status": "ERROR", "message": "السيكريت انكتب بس الكود ما طلع، جرب اضغط توليد مرة تانية"}
+        return {"status": "ERROR", "message": "لم يظهر كود الـ 6 أرقام بعد التوليد"}
 
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
@@ -198,6 +205,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
