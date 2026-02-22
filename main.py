@@ -158,7 +158,7 @@ async def submit_2fa(user_id: str, secret: str):
         return {"status": "ERROR", "message": "تم إرسال السيكريت ولكن لم يظهر كود الـ 6 أرقام"}
 
     except Exception as e:
-        return {"status": "ERROR", "message": str(e)}}
+        return {"status": "ERROR", "message": str(e)}
 
 @app.get("/api/finish-task")
 async def finish_task(user_id: str):
@@ -200,6 +200,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
