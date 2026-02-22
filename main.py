@@ -124,40 +124,39 @@ async def submit_2fa(user_id: str, secret: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # 1. إدخال السيكريت في الحقل (باستخدام الـ Placeholder الظاهر في الصورة)
-        secret_input = page.locator('input[placeholder="Paste 2FA secret key..."]')
+        # 1. استهداف الحقل باستخدام الـ ID اللي ظهر بالصورة (tfaSecret)
+        # استخدام force=True بيخلي Playwright يتجاوز فحص الرؤية
+        secret_input = page.locator("#tfaSecret") 
         
         if await secret_input.count() > 0:
-            await secret_input.click() # للتركيز
-            await secret_input.fill("") # تنظيف
-            await secret_input.fill(secret)
+            await secret_input.scroll_into_view_if_needed()
+            await secret_input.fill(secret, force=True) 
             await asyncio.sleep(1)
         else:
-            return {"status": "ERROR", "message": "لم يتم العثور على حقل السيكريت"}
+            # محاولة احتياطية بالـ placeholder
+            await page.locator('input[placeholder*="2FA secret key"]').fill(secret, force=True)
 
-        # 2. الضغط على الزر الأصفر الظاهر في الصورة
-        # نستخدم النص الكامل للزر لضمان الدقة
-        generate_btn = page.locator('button:has-text("Generate OTP Code")')
-        
-        if await generate_btn.count() > 0:
-            await generate_btn.click()
-            # انتظار ظهور الكود (الموقع يحتاج وقت للمعالجة)
-            await asyncio.sleep(6)
+        # 2. الضغط على زر التوليد (Generate OTP Code)
+        # أحياناً الزر بكون محمي، فبنستخدم click(force=True)
+        gen_btn = page.locator('button:has-text("Generate OTP Code")')
+        if await gen_btn.count() > 0:
+            await gen_btn.scroll_into_view_if_needed()
+            await gen_btn.click(force=True)
+            await asyncio.sleep(7) # انتظار الكود
         else:
-            return {"status": "ERROR", "message": "لم يتم العثور على زر التوليد"}
+            return {"status": "ERROR", "message": "الزر غير موجود أو الصفحة لم تكتمل"}
 
-        # 3. سحب الكود النهائي (الموقع سيقوم بتحديث النص في الصفحة ليظهر الرمز)
-        # سنبحث عن رقم مكون من 6 خانات يظهر بعد الضغط
+        # 3. سحب الكود (6 أرقام)
         content = await page.evaluate("() => document.body.innerText")
         final_codes = re.findall(r'\b\d{6}\b', content)
         
         if final_codes:
-            # نأخذ آخر كود ظهر (غالباً هو الكود المولد الجديد)
             return {"status": "SUCCESS", "final_code": final_codes[-1]}
         
-        return {"status": "ERROR", "message": "تم إرسال السيكريت ولكن لم يظهر كود الـ 6 أرقام"}
+        return {"status": "ERROR", "message": "تم إدخال السيكريت ولكن الكود النهائي لم يظهر"}
 
     except Exception as e:
+        # حذف القوس الزائد هنا أيضاً لضمان سلامة الـ Syntax
         return {"status": "ERROR", "message": str(e)}
 
 @app.get("/api/finish-task")
@@ -200,6 +199,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
