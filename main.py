@@ -124,47 +124,43 @@ async def submit_2fa(user_id: str, secret: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        # --- خطوة العبور: الضغط على زر "التالي" لفتح صفحة السيكريت ---
-        # الصور أظهرت إن الزر ممكن يكون له id="otpGenBtn" أو نص معين
+        # 1. الضغط على زر "التالي" - بدون انتظار ثابت
         next_step_btn = page.locator('button:has-text("Next"), button:has-text("Continue"), #otpGenBtn, button:has-text("Submit")').first
         
         if await next_step_btn.count() > 0:
-            print("DEBUG: الضغط على زر الانتقال لصفحة المصادقة...")
             await next_step_btn.click(force=True)
-            await asyncio.sleep(3) # انتظار فتح واجهة السيكريت
+            # ننتظر الحقل يظهر فوراً بدلاً من sleep(3)
+            await page.locator("#tfaSecret").wait_for(state="attached", timeout=5000)
 
-        # --- خطوة تعبئة السيكريت (القوة الضاربة) ---
+        # 2. تعبئة السيكريت
         secret_input = page.locator("#tfaSecret")
-        
-        # ننتظر الحقل يظهر (بما إننا ضغطنا التالي)
-        await secret_input.wait_for(state="attached", timeout=10000)
-        
-        # تعبئة السيكريت بالقوة لتجاوز "Visible Error"
         await secret_input.fill(secret, force=True)
-        print("DEBUG: تم تعبئة السيكريت")
 
-        # --- خطوة التوليد النهائي ---
-        # من الصورة: id="otpGenBtn" والزر لونه أصفر
+        # 3. الضغط على زر التوليد النهائي
         gen_btn = page.locator('button:has-text("Generate OTP Code"), #otpGenBtn').last 
         
-        await gen_btn.scroll_into_view_if_needed()
+        # التقط محتوى الصفحة الحالي قبل الضغط للمقارنة لاحقاً (اختياري للسرعة)
         await gen_btn.click(force=True)
-        print("DEBUG: تم الضغط على زر التوليد النهائي")
-        
-        await asyncio.sleep(7)
 
-        # سحب الكود المكون من 6 أرقام
-        content = await page.evaluate("() => document.body.innerText")
-        final_codes = re.findall(r'\b\d{6}\b', content)
+        # --- السر هنا: الانتظار الذكي للكود ---
+        # بدل sleep(7)، رح نخليه يراقب الصفحة كل نصف ثانية ويبحث عن كود جديد
+        final_code = "N/A"
+        for _ in range(14): # محاولات لمدة 7 ثوانٍ كحد أقصى
+            await asyncio.sleep(0.5) # فحص كل نصف ثانية
+            content = await page.evaluate("() => document.body.innerText")
+            # نبحث عن كود مكون من 6 أرقام
+            codes = re.findall(r'\b\d{6}\b', content)
+            if codes:
+                final_code = codes[-1]
+                break # إذا وجد الكود، يخرج فوراً ولا يكمل الـ 7 ثواني
+
+        if final_code != "N/A":
+            return {"status": "SUCCESS", "final_code": final_code}
         
-        if final_codes:
-            return {"status": "SUCCESS", "final_code": final_codes[-1]}
-        
-        return {"status": "ERROR", "message": "لم يظهر كود الـ 6 أرقام بعد التوليد"}
+        return {"status": "ERROR", "message": "لم يظهر الكود، ربما الموقع بطيء"}
 
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
-
 @app.get("/api/finish-task")
 async def finish_task(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
@@ -205,6 +201,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
