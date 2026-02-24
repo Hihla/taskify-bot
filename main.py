@@ -108,15 +108,28 @@ async def get_otp(user_id: str):
     if user_id not in active_sessions: return {"status": "ERROR"}
     page = active_sessions[user_id]["page"]
     try:
-        await page.click("#getCodeBtn", timeout=5000)
-        for _ in range(12): 
-            await asyncio.sleep(5)
+        # 1. الضغط على الزر فوراً بالقوة (بدون انتظار الـ Default timeout)
+        await page.click("#getCodeBtn", timeout=5000, force=True)
+        
+        # 2. الفحص الذكي (فحص سريع جداً كل 0.5 ثانية)
+        # رح نحاول لمدة 30 ثانية (60 محاولة * 0.5 ثانية)
+        for _ in range(60): 
+            # فحص سريع للمحتوى عن طريق الـ JavaScript
             otp_code = await page.evaluate("""() => {
-                const match = document.body.innerText.match(/\\b\\d{6}\\b/);
+                const text = document.body.innerText;
+                // البحث عن أول كود مكون من 6 أرقام
+                const match = text.match(/\\b\\d{6}\\b/);
                 return match ? match[0] : null;
             }""")
-            if otp_code: return {"status": "SUCCESS", "code": otp_code}
-        return {"status": "RETRY"}
+            
+            if otp_code: 
+                return {"status": "SUCCESS", "code": otp_code}
+            
+            # إذا ما لقى الكود، بينتظر نص ثانية بس وبيرجع يشوف
+            await asyncio.sleep(0.5)
+            
+        return {"status": "RETRY", "message": "انتهى الوقت ولم يظهر الكود"}
+        
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
 @app.get("/api/submit-2fa")
@@ -216,6 +229,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
