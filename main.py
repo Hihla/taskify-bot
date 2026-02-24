@@ -166,34 +166,49 @@ async def finish_task(user_id: str):
     if user_id not in active_sessions: return {"status": "EXPIRED"}
     page = active_sessions[user_id]["page"]
     try:
-        await asyncio.sleep(3)
+        # 1. الانتظار الذكي للزر بدل الـ sleep(3)
         submit_btn = page.locator('button:has-text("Submit Report"), button:has-text("Finish")')
+        await submit_btn.wait_for(state="attached", timeout=5000)
         
-        if await submit_btn.count() > 0:
-            await submit_btn.scroll_into_view_if_needed()
-            await asyncio.sleep(1)
-            await submit_btn.click()
-            await asyncio.sleep(8)
+        # 2. الضغط السريع بالقوة
+        await submit_btn.click(force=True)
+        print("DEBUG: تم الضغط على إنهاء المهمة")
+
+        # 3. مراقبة النتيجة (Polling) بدل الـ sleep(8)
+        # رح نفحص كل 0.5 ثانية إذا طلعت رسالة خطأ أو نجاح
+        status_result = {"status": "ERROR", "message": "Timeout waiting for confirmation"}
+        
+        for _ in range(16):  # محاولات لمدة 8 ثواني كحد أقصى
+            await asyncio.sleep(0.5)
             
-        error_detected = await page.evaluate("""() => {
-            const t = document.body.innerText.toLowerCase();
-            return t.includes("exist") || 
-                   t.includes("properly") || 
-                   t.includes("failed") || 
-                   t.includes("not completed") ||
-                   t.includes("error");
-        }""")
+            # فحص المحتوى بالكامل
+            page_text = await page.evaluate("() => document.body.innerText.toLowerCase()")
+            
+            # حالة الخطأ
+            if any(word in page_text for word in ["exist", "properly", "failed", "not completed", "error"]):
+                back_btn = page.locator('button:has-text("Back to Task"), .btn-secondary')
+                if await back_btn.count() > 0:
+                    await back_btn.click(force=True)
+                status_result = {"status": "RETRY_NEEDED", "message": "Site rejected. Try again."}
+                break
+            
+            # حالة النجاح (إذا اختفى الزر أو طلعت كلمة نجاح أو شكر)
+            if any(word in page_text for word in ["success", "thank you", "completed", "submitted", "confirmed"]):
+                status_result = {"status": "SUCCESS"}
+                break
+            
+            # حالة إضافية: إذا الموقع رجعنا لصفحة تانية فجأة (معناها المهمة خلصت)
+            if await submit_btn.count() == 0:
+                status_result = {"status": "SUCCESS"}
+                break
 
-        if error_detected:
-            back_btn = page.locator('button:has-text("Back to Task"), .btn-secondary')
-            if await back_btn.count() > 0:
-                await back_btn.click()
-            return {"status": "RETRY_NEEDED", "message": "Site rejected. Try again."}
-
-        await active_sessions[user_id]["browser"].close()
-        await active_sessions[user_id]["p"].stop()
-        del active_sessions[user_id]
-        return {"status": "SUCCESS"}
+        # إذا نجحت المهمة، نسكر المتصفح وننظف الذاكرة
+        if status_result["status"] == "SUCCESS":
+            await active_sessions[user_id]["browser"].close()
+            await active_sessions[user_id]["p"].stop()
+            del active_sessions[user_id]
+        
+        return status_result
         
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
@@ -201,6 +216,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
