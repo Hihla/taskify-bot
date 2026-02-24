@@ -27,30 +27,30 @@ async def root():
     return {"status": "online", "message": "Sniper is live"}
 
 @app.get("/api/start-task")
-async def start_task(user_id: str, task_type: str = "gmail"):
+async def start_task(user_id: str, web_user: str, web_pass: str, task_type: str = "gmail"):
     p = None
     browser = None
     try:
         p = await async_playwright().start()
-        # تعديل سطر التشغيل في start_task
+        # سطر التشغيل الخاص بريندر
         browser = await p.chromium.launch(
             headless=True, 
             args=[
                 "--no-sandbox", 
                 "--disable-setuid-sandbox", 
-                "--disable-dev-shm-usage", # مهم جداً لريندر
+                "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--no-zygote",
-                "--single-process" # بيوفر رامات كتير
+                "--single-process"
             ]
         )
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = await context.new_page()
 
-        # تسجيل الدخول
+        # تسجيل الدخول بالحساب القادم من التطبيق
         await page.goto(LOGIN_URL, timeout=60000)
-        await page.fill('input[name="username"]', WEB_USER)
-        await page.fill('input[name="password"]', WEB_PASS)
+        await page.fill('input[name="username"]', web_user) # التعديل هنا
+        await page.fill('input[name="password"]', web_pass) # والتعديل هنا
         await page.click('button[type="submit"]')
         await page.wait_for_load_state("networkidle")
         
@@ -69,7 +69,7 @@ async def start_task(user_id: str, task_type: str = "gmail"):
             "user": "N/A"
         }
 
-        # منطق سحب مخصص للانستا
+        # منطق سحب مخصص للانستا (كما هو في كودك)
         if task_type.lower() == "instagram":
             lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
             for i, line in enumerate(lines):
@@ -83,7 +83,7 @@ async def start_task(user_id: str, task_type: str = "gmail"):
                 if "FIRST NAME" in l_up and i + 1 < len(lines):
                     res["first_name"] = lines[i+1].replace("COPY", "").strip()
         
-        # منطق سحب مخصص للجيميل
+        # منطق سحب مخصص للجيميل (كما هو في كودك)
         else:
             email_match = re.search(r'EMAIL\n(.*?)\n', raw_text, re.IGNORECASE)
             if email_match: res["email"] = email_match.group(1).replace("COPY", "").strip()
@@ -99,8 +99,11 @@ async def start_task(user_id: str, task_type: str = "gmail"):
 
         active_sessions[user_id] = {"browser": browser, "page": page, "p": p}
         return {"status": "READY", "data": res}
+
     except Exception as e:
         if browser: await browser.close()
+        # إضافة p.stop لضمان عدم تعليق العملية في الرام
+        if p: await p.stop()
         return {"status": "ERROR", "message": str(e)}
 
 @app.get("/api/get-otp")
@@ -229,6 +232,7 @@ async def finish_task(user_id: str):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
 
 
 
